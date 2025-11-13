@@ -69,8 +69,11 @@ MAX_PE_TTM = 25.0
 MAX_FORWARD_PE = 15.0
 MAX_DEBT_TO_EQUITY = 0.35  # 35 %
 MIN_EPS_CAGR = 0.08  # 8 % par an par défaut
+MIN_EPS_CAGR_V1_1 = 0.15  # seuil renforcé pour le filtre V1.1
 MAX_PEG = 1.2
 MIN_MARKET_CAP = 5e9
+UNIVERSE_MIN_MARKET_CAP = 1e9
+UNIVERSE_MIN_ADV = 100_000.0
 
 QUALITY_WEIGHT = 0.65
 SAFETY_WEIGHT = 0.35
@@ -94,8 +97,18 @@ class FilterSettings:
     max_forward_pe: float = MAX_FORWARD_PE
     max_debt_to_equity: float = MAX_DEBT_TO_EQUITY
     min_eps_cagr: float = MIN_EPS_CAGR
+    min_eps_cagr_v1_1: float = MIN_EPS_CAGR_V1_1
     max_peg: float = MAX_PEG
     min_market_cap: float = MIN_MARKET_CAP
+
+
+@dataclass
+class UniverseSettings:
+    """Universe configuration, including liquidity guards for SBF120."""
+
+    tickers: List[str] = field(default_factory=lambda: list(CAC40_TICKERS))
+    min_market_cap: float = UNIVERSE_MIN_MARKET_CAP
+    min_adv_3m: float = UNIVERSE_MIN_ADV
 
 
 @dataclass
@@ -114,7 +127,7 @@ class WeightSettings:
 class Settings:
     """Aggregate settings for the screener, including universe and weights."""
 
-    tickers: List[str] = field(default_factory=lambda: list(CAC40_TICKERS))
+    universe: UniverseSettings = field(default_factory=UniverseSettings)
     filters: FilterSettings = field(default_factory=FilterSettings)
     weights: WeightSettings = field(default_factory=WeightSettings)
 
@@ -158,8 +171,8 @@ def normalize_nexus_weights(weights: WeightSettings) -> None:
 def get_cac40_tickers(settings: Settings) -> List[str]:
     """Return the list of tickers to evaluate, honoring config overrides."""
 
-    if settings.tickers:
-        return settings.tickers
+    if settings.universe.tickers:
+        return settings.universe.tickers
     return list(CAC40_TICKERS)
 
 
@@ -218,7 +231,12 @@ def load_config(path: Optional[str]) -> Settings:
         if isinstance(tickers, list) and tickers:
             clean = [str(t).strip() for t in tickers if str(t).strip()]
             if clean:
-                settings.tickers = clean
+                settings.universe.tickers = clean
+        for attr in ("min_market_cap", "min_adv_3m"):
+            converted = safe_float(universe_cfg.get(attr))
+            if np.isnan(converted):
+                continue
+            setattr(settings.universe, attr, float(converted))
 
     filters_cfg = raw_config.get("filters")
     if isinstance(filters_cfg, dict):
@@ -267,6 +285,7 @@ def apply_profile_overrides(
         filters.max_forward_pe = min(filters.max_forward_pe, 13.0)
         filters.max_debt_to_equity = min(filters.max_debt_to_equity, 0.30)
         filters.min_eps_cagr = max(filters.min_eps_cagr, 0.10)
+        filters.min_eps_cagr_v1_1 = max(filters.min_eps_cagr_v1_1, 0.18)
         weights.nexus_quality = 0.55
         weights.nexus_safety = 0.45
         weights.garp_valuation = 0.30
@@ -278,6 +297,7 @@ def apply_profile_overrides(
         filters.max_forward_pe = max(filters.max_forward_pe, 18.0)
         filters.max_debt_to_equity = max(filters.max_debt_to_equity, 0.50)
         filters.min_eps_cagr = min(filters.min_eps_cagr, 0.05)
+        filters.min_eps_cagr_v1_1 = min(filters.min_eps_cagr_v1_1, 0.10)
         weights.nexus_quality = 0.75
         weights.nexus_safety = 0.25
         weights.garp_valuation = 0.25
@@ -372,6 +392,7 @@ def build_dataframe(records: Iterable[Dict[str, float]], settings: Settings) -> 
 
     filters = settings.filters
     weights = settings.weights
+    universe = settings.universe
 
     # Strict filter flags.
     df["per_ok"] = df["pe_ttm"].apply(
@@ -414,6 +435,12 @@ def build_dataframe(records: Iterable[Dict[str, float]], settings: Settings) -> 
         lambda row: compute_nexus_score(row["garp_score"], row["safety_score"], weights),
         axis=1,
     )
+
+    # V1.1 SBF120 overlay
+    df["universe_ok"] = df.apply(lambda row: compute_universe_ok(row, universe), axis=1)
+    df["data_complete_v1_1"] = df.apply(compute_data_complete_v1_1, axis=1)
+    df["score_v1_1"] = df.apply(lambda row: compute_v1_1_score(row, filters), axis=1)
+    df["category_v1_1"] = df.apply(categorize_v1_1, axis=1)
 
     return df
 
@@ -668,6 +695,105 @@ def compute_nexus_score(
 
 
 # ---------------------------------------------------------------------------
+# V1.1 SBF120 overlay helpers
+# ---------------------------------------------------------------------------
+CATEGORY_ELITE = "ELITE_V1_1"
+CATEGORY_WATCHLIST = "WATCHLIST_V1_1"
+CATEGORY_REJECT = "REJECT_V1_1"
+CATEGORY_EXCLUDED = "EXCLUDED_UNIVERSE"
+CATEGORY_DATA_MISSING = "DATA_MISSING"
+
+
+def compute_universe_ok(row: pd.Series, universe: UniverseSettings) -> bool:
+    """Return True when the row meets liquidity & size requirements."""
+
+    mcap = row.get("market_cap", np.nan)
+    adv = row.get("adv_3m", np.nan)
+
+    if np.isnan(mcap) or np.isnan(adv):
+        return False
+    if mcap < universe.min_market_cap:
+        return False
+    if adv < universe.min_adv_3m:
+        return False
+    return True
+
+
+def compute_data_complete_v1_1(row: pd.Series) -> bool:
+    """Check whether the row contains all metrics required for V1.1 scoring."""
+
+    required = ["pe_ttm", "pe_fwd", "debt_to_equity", "eps_cagr", "peg"]
+    for column in required:
+        value = row.get(column, np.nan)
+        if value is None:
+            return False
+        try:
+            if np.isnan(value):
+                return False
+        except TypeError:
+            return False
+
+    if row.get("pe_ttm", 0.0) <= 0:
+        return False
+    if row.get("pe_fwd", 0.0) <= 0:
+        return False
+    if row.get("eps_cagr", 0.0) <= 0:
+        return False
+    if row.get("peg", 0.0) <= 0:
+        return False
+    return True
+
+
+def compute_v1_1_score(row: pd.Series, filters: FilterSettings) -> int:
+    """Return the binary 0-5 V1.1 score (requires universe/data eligibility)."""
+
+    if not row.get("universe_ok", False):
+        return 0
+    if not row.get("data_complete_v1_1", False):
+        return 0
+
+    score = 0
+
+    pe_ttm = row.get("pe_ttm", np.nan)
+    pe_fwd = row.get("pe_fwd", np.nan)
+    de = row.get("debt_to_equity", np.nan)
+    eps = row.get("eps_cagr", np.nan)
+    peg = row.get("peg", np.nan)
+
+    if not np.isnan(pe_ttm) and pe_ttm < filters.max_pe_ttm:
+        score += 1
+    if not np.isnan(pe_fwd) and pe_fwd < filters.max_forward_pe:
+        score += 1
+    if not np.isnan(de) and de < filters.max_debt_to_equity:
+        score += 1
+
+    min_eps = getattr(filters, "min_eps_cagr_v1_1", filters.min_eps_cagr)
+    if not np.isnan(eps) and eps > min_eps:
+        score += 1
+
+    if not np.isnan(peg) and peg < filters.max_peg:
+        score += 1
+
+    return score
+
+
+def categorize_v1_1(row: pd.Series) -> str:
+    """Assign a qualitative category based on V1.1 score and eligibility."""
+
+    if not row.get("universe_ok", False):
+        return CATEGORY_EXCLUDED
+    if not row.get("data_complete_v1_1", False):
+        return CATEGORY_DATA_MISSING
+
+    score = int(row.get("score_v1_1", 0))
+    if score == 5:
+        return CATEGORY_ELITE
+    if score >= 3:
+        return CATEGORY_WATCHLIST
+    return CATEGORY_REJECT
+
+
+# ---------------------------------------------------------------------------
 # Screener orchestration
 # ---------------------------------------------------------------------------
 def run_screener(tickers: Iterable[str], settings: Settings) -> pd.DataFrame:
@@ -710,6 +836,7 @@ def print_ticker_diagnostics(
     tickers: Iterable[str],
     filters: FilterSettings,
     weights: WeightSettings,
+    universe: UniverseSettings,
     profile: Optional[str] = None,
 ) -> None:
     """Pretty-print a diagnostic breakdown for the requested tickers."""
@@ -796,6 +923,18 @@ def print_ticker_diagnostics(
             f" (weight ≈ {_format_float(weights.garp_size)})"
         )
         print(f"  => GARP composite score: {_format_float(row.get('garp_score', np.nan))}")
+        print()
+
+        print("V1.1 overlay:")
+        print(
+            f"  universe_ok: {row.get('universe_ok', False)} "
+            f"(min_mcap = {_format_float(universe.min_market_cap)}, min_adv = {_format_float(universe.min_adv_3m)})"
+        )
+        print(
+            f"  data_complete_v1_1: {row.get('data_complete_v1_1', False)}"
+            f" | score_v1_1: {row.get('score_v1_1', 0)}"
+            f" | category_v1_1: {row.get('category_v1_1', 'NA')}"
+        )
         print()
 
         print("Risk metrics:")
@@ -897,6 +1036,36 @@ def main() -> None:
     df.to_csv(args.output, index=False)
     LOGGER.info("Résultats complets sauvegardés dans %s", args.output)
 
+    # OroTitan Nexus V1.1 overlay focusing on SBF120-style eligibility
+    eligible_v1 = df[(df["universe_ok"]) & (df["data_complete_v1_1"])].copy()
+    print("\n=== OroTitan V1.1 – SBF120 GARP filter (0–5 points) ===")
+    if eligible_v1.empty:
+        print("Aucune valeur éligible (universe_ok=False ou données manquantes).")
+    else:
+        eligible_v1.sort_values(
+            by=["score_v1_1", "peg", "debt_to_equity", "vol_1y"],
+            ascending=[False, True, True, True],
+            inplace=True,
+        )
+        v1_top = eligible_v1[eligible_v1["score_v1_1"] >= 3]
+        if v1_top.empty:
+            print("Aucune valeur n'atteint la Watchlist (score >= 3).")
+        else:
+            cols = [
+                "ticker",
+                "score_v1_1",
+                "category_v1_1",
+                "pe_ttm",
+                "pe_fwd",
+                "eps_cagr",
+                "peg",
+                "debt_to_equity",
+                "market_cap",
+                "adv_3m",
+            ]
+            cols = [c for c in cols if c in v1_top.columns]
+            print(v1_top[cols].head(40).to_string(index=False))
+
     if args.detail:
         print()
         print_ticker_diagnostics(
@@ -904,6 +1073,7 @@ def main() -> None:
             args.detail,
             settings.filters,
             settings.weights,
+            settings.universe,
             profile=args.profile,
         )
 
