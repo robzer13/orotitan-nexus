@@ -1,9 +1,8 @@
-"""Command-line GARP screener for CAC40 equities.
+"""CAC 40 GARP-style screener with strict filters and weighted scoring.
 
-This MVP builds a Growth At a Reasonable Price (GARP) screener focused on
-fundamental ratios that are easy to obtain from the Yahoo Finance API through
-`yfinance`.  The script is intentionally modular so that the sourcing and
-scoring logic can evolve independently.
+The script downloads fundamental metrics for CAC 40 constituents via yfinance,
+then applies the user-specified hard filters alongside a soft scoring model
+based on valuation, growth, balance-sheet quality, and market capitalization.
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ import pandas as pd
 import yfinance as yf
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Universe configuration
 # ---------------------------------------------------------------------------
 CAC40_TICKERS: List[str] = [
     "MC.PA",
@@ -26,239 +25,317 @@ CAC40_TICKERS: List[str] = [
     # TODO: compléter la liste complète du CAC 40
 ]
 
-MAX_PE_TTM = 25.0
-MAX_DEBT_TO_EQUITY = 0.35
-MIN_EPS_CAGR = 0.08
+TRAILING_PE_MAX = 25.0
+FORWARD_PE_MAX = 15.0
+DEBT_TO_EQUITY_MAX = 35.0
+EPS_GROWTH_MIN = 0.15  # 15 %
+PEG_MAX = 1.2
+MARKET_CAP_MIN = 5e9
+
+STRICT_SORT_COLUMNS = ["strict_pass", "garp_score"]
+DEFAULT_OUTPUT = "cac40_screen_results.csv"
+DEFAULT_MAX_ROWS = 40
 
 LOGGER = logging.getLogger("cac40_garp_screener")
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 def get_cac40_tickers() -> List[str]:
-    """Return the list of CAC 40 tickers to screen."""
+    """Return the list of CAC 40 tickers to evaluate."""
 
     return CAC40_TICKERS
 
 
-# ---------------------------------------------------------------------------
-# Data retrieval helpers
-# ---------------------------------------------------------------------------
-def normalize_debt_to_equity(value: Optional[float]) -> float:
-    """Normalise le ratio dette/capitaux propres (exprimé en proportion).
-
-    Yahoo Finance renvoie parfois le ratio en pourcentage (ex: 120). On
-    considère qu'une valeur supérieure à 10 représente probablement un
-    pourcentage, et on divise par 100 dans ce cas.
-    """
+def safe_float(value: Optional[float]) -> float:
+    """Return ``value`` as float, or NaN when conversion fails."""
 
     if value is None:
         return np.nan
     try:
-        value = float(value)
+        return float(value)
     except (TypeError, ValueError):
         return np.nan
-    if value > 10:
-        value /= 100.0
-    return value
-
-
-def compute_eps_cagr(earnings_series: Optional[pd.Series]) -> float:
-    """Compute EPS CAGR using the yearly `earnings` series as a proxy.
-
-    Parameters
-    ----------
-    earnings_series : pandas.Series
-        Série temporelle des bénéfices annuels (ou EPS) triée par année.
-    """
-
-    if earnings_series is None or earnings_series.empty:
-        return np.nan
-
-    earnings_series = earnings_series.sort_index()
-    first = earnings_series.iloc[0]
-    last = earnings_series.iloc[-1]
-    n_periods = len(earnings_series) - 1
-
-    if n_periods <= 0:
-        return np.nan
-    if first <= 0 or last <= 0:
-        return np.nan
-
-    cagr = (last / first) ** (1 / n_periods) - 1
-    return float(cagr)
-
-
-def compute_peg(pe_fwd: Optional[float], eps_cagr: Optional[float]) -> float:
-    """Return the PEG ratio based on the forward PE and EPS CAGR."""
-
-    if pe_fwd is None or np.isnan(pe_fwd):
-        return np.nan
-    if eps_cagr is None or np.isnan(eps_cagr) or eps_cagr <= 0:
-        return np.nan
-
-    return pe_fwd / (eps_cagr * 100)
 
 
 def fetch_fundamental_data(ticker: str) -> Dict[str, float]:
-    """Fetch Yahoo Finance fundamentals for ``ticker`` and compute derived metrics."""
+    """Fetch Yahoo Finance info for ``ticker`` and extract required fields."""
 
     yf_ticker = yf.Ticker(ticker)
     info: Dict[str, Optional[float]] = yf_ticker.info or {}
 
-    pe_ttm = info.get("trailingPE")
-    pe_fwd = info.get("forwardPE")
-    debt_to_equity = normalize_debt_to_equity(info.get("debtToEquity"))
-    roe = info.get("returnOnEquity")
-    market_cap = info.get("marketCap")
-
-    earnings = yf_ticker.earnings
-    earnings_series = earnings["Earnings"] if earnings is not None and not earnings.empty else None
-    eps_cagr = compute_eps_cagr(earnings_series)
-    peg = compute_peg(pe_fwd, eps_cagr)
-
-    critical_values = [pe_ttm, debt_to_equity, eps_cagr]
-    data_incomplete = any(value is None or np.isnan(value) for value in critical_values)
+    # EPS growth proxy. Documented to use `earningsGrowth` with a fallback to
+    # `earningsQuarterlyGrowth` when annual data is not available.
+    eps_growth = info.get("earningsGrowth")
+    if eps_growth is None:
+        eps_growth = info.get("earningsQuarterlyGrowth")
 
     return {
         "ticker": ticker,
-        "pe_ttm": float(pe_ttm) if pe_ttm is not None else np.nan,
-        "pe_fwd": float(pe_fwd) if pe_fwd is not None else np.nan,
-        "debt_to_equity": float(debt_to_equity) if debt_to_equity is not None else np.nan,
-        "eps_cagr": float(eps_cagr) if eps_cagr is not None else np.nan,
-        "peg": float(peg) if peg is not None else np.nan,
-        "roe": float(roe) if roe is not None else np.nan,
-        "market_cap": float(market_cap) if market_cap is not None else np.nan,
-        "data_incomplete": data_incomplete,
+        "trailingPE": safe_float(info.get("trailingPE")),
+        "forwardPE": safe_float(info.get("forwardPE")),
+        "debtToEquity": safe_float(info.get("debtToEquity")),
+        "eps_growth": safe_float(eps_growth),
+        "pegRatio": safe_float(info.get("pegRatio")),
+        "marketCap": safe_float(info.get("marketCap")),
     }
 
 
-# ---------------------------------------------------------------------------
-# Screening logic
-# ---------------------------------------------------------------------------
-def passes_hard_filters(row: pd.Series) -> bool:
-    """Return True if ``row`` satisfies the strict GARP constraints."""
-
-    if row.get("data_incomplete", False):
-        return False
-    if not (0 < row.get("pe_ttm", np.nan) <= MAX_PE_TTM):
-        return False
-    if not (row.get("debt_to_equity", np.nan) <= MAX_DEBT_TO_EQUITY):
-        return False
-    if not (row.get("eps_cagr", np.nan) >= MIN_EPS_CAGR):
-        return False
-    return True
-
-
-def compute_garp_score(row: pd.Series) -> float:
-    """Compute the 0-100 GARP score for a company."""
-
-    if not row.get("passes_hard_filters", False):
-        return 0.0
-
-    score = 40.0
-    pe_fwd = row.get("pe_fwd", np.nan)
-    peg = row.get("peg", np.nan)
-    eps_cagr = row.get("eps_cagr", np.nan)
-    roe = row.get("roe", np.nan)
-
-    if not np.isnan(pe_fwd) and pe_fwd <= 15:
-        score += 15
-
-    if not np.isnan(peg):
-        if peg <= 1.0:
-            score += 25
-        elif peg <= 1.2:
-            score += 15
-
-    if not np.isnan(eps_cagr) and eps_cagr >= 0.15:
-        score += 10
-
-    if not np.isnan(roe):
-        if roe >= 0.10:
-            score += 10
-        elif roe >= 0.08:
-            score += 5
-
-    return float(np.clip(score, 0, 100))
-
-
-def run_screener(tickers: Iterable[str]) -> pd.DataFrame:
-    """Run the full pipeline: download, compute metrics, and score the universe."""
-
-    records = []
-    for ticker in tickers:
-        try:
-            fundamentals = fetch_fundamental_data(ticker)
-            records.append(fundamentals)
-        except Exception:  # pragma: no cover - defensive logging
-            LOGGER.exception("Failed to retrieve data for %s", ticker)
-            records.append(
-                {
-                    "ticker": ticker,
-                    "pe_ttm": np.nan,
-                    "pe_fwd": np.nan,
-                    "debt_to_equity": np.nan,
-                    "eps_cagr": np.nan,
-                    "peg": np.nan,
-                    "roe": np.nan,
-                    "market_cap": np.nan,
-                    "data_incomplete": True,
-                }
-            )
+def build_dataframe(records: Iterable[Dict[str, float]]) -> pd.DataFrame:
+    """Create a DataFrame with boolean filters and scoring columns."""
 
     df = pd.DataFrame.from_records(records)
-    df["passes_hard_filters"] = df.apply(passes_hard_filters, axis=1)
-    df["garp_score"] = df.apply(compute_garp_score, axis=1)
+    if df.empty:
+        return df
+
+    # Strict filter flags.
+    df["per_ok"] = df["trailingPE"].apply(
+        lambda v: bool(not np.isnan(v) and v < TRAILING_PE_MAX)
+    )
+    df["per_forward_ok"] = df["forwardPE"].apply(
+        lambda v: bool(not np.isnan(v) and v < FORWARD_PE_MAX)
+    )
+    df["de_ok"] = df["debtToEquity"].apply(
+        lambda v: bool(not np.isnan(v) and v < DEBT_TO_EQUITY_MAX)
+    )
+    df["eps_growth_ok"] = df["eps_growth"].apply(
+        lambda v: bool(not np.isnan(v) and v > EPS_GROWTH_MIN)
+    )
+    df["peg_ok"] = df["pegRatio"].apply(
+        lambda v: bool(not np.isnan(v) and v < PEG_MAX)
+    )
+    df["mktcap_ok"] = df["marketCap"].apply(
+        lambda v: bool(not np.isnan(v) and v > MARKET_CAP_MIN)
+    )
+
+    df["strict_pass"] = (
+        df["per_ok"]
+        & df["per_forward_ok"]
+        & df["de_ok"]
+        & df["eps_growth_ok"]
+        & df["peg_ok"]
+        & df["mktcap_ok"]
+    )
+
+    # Soft scores.
+    df["valuation_score"] = df.apply(
+        lambda row: compute_valuation_score(
+            row["trailingPE"], row["forwardPE"], row["pegRatio"]
+        ),
+        axis=1,
+    )
+    df["growth_score"] = df["eps_growth"].apply(score_growth)
+    df["balance_sheet_score"] = df["debtToEquity"].apply(score_balance_sheet)
+    df["size_score"] = df["marketCap"].apply(score_size)
+    df["garp_score"] = df.apply(
+        lambda row: compute_final_garp_score(
+            row["valuation_score"],
+            row["growth_score"],
+            row["balance_sheet_score"],
+            row["size_score"],
+        ),
+        axis=1,
+    )
+
     return df
 
 
 # ---------------------------------------------------------------------------
-# CLI utilities
+# Scoring utilities
 # ---------------------------------------------------------------------------
+def interpolate(value: float, x0: float, x1: float, y0: float, y1: float) -> float:
+    """Linearly interpolate ``value`` between ``(x0, y0)`` and ``(x1, y1)``."""
+
+    if x0 == x1:
+        return y1
+    return y0 + (value - x0) * (y1 - y0) / (x1 - x0)
+
+
+def compute_valuation_score(trailing_pe: float, forward_pe: float, peg: float) -> float:
+    """Average the valuation metrics while ignoring missing values."""
+
+    parts: List[float] = []
+    if not np.isnan(trailing_pe):
+        if trailing_pe <= 15:
+            parts.append(100.0)
+        elif trailing_pe <= 25:
+            parts.append(interpolate(trailing_pe, 15, 25, 100.0, 50.0))
+        else:
+            parts.append(0.0)
+    if not np.isnan(forward_pe):
+        if forward_pe <= 15:
+            parts.append(100.0)
+        elif forward_pe <= 25:
+            parts.append(interpolate(forward_pe, 15, 25, 100.0, 50.0))
+        else:
+            parts.append(0.0)
+    if not np.isnan(peg):
+        if peg <= 1.0:
+            parts.append(100.0)
+        elif peg <= 1.5:
+            parts.append(interpolate(peg, 1.0, 1.5, 100.0, 50.0))
+        else:
+            parts.append(0.0)
+
+    if not parts:
+        return 0.0
+    return float(np.mean(parts))
+
+
+def score_growth(eps_growth: float) -> float:
+    """Score EPS growth according to the piecewise rules."""
+
+    if np.isnan(eps_growth):
+        return np.nan
+    if eps_growth >= 0.15:
+        return 100.0
+    if eps_growth >= 0.05:
+        return interpolate(eps_growth, 0.05, 0.15, 50.0, 100.0)
+    if eps_growth > 0:
+        return interpolate(eps_growth, 0.0, 0.05, 0.0, 50.0)
+    return 0.0
+
+
+def score_balance_sheet(de_ratio: float) -> float:
+    """Score Debt/Equity according to resilience thresholds."""
+
+    if np.isnan(de_ratio):
+        return np.nan
+    if de_ratio <= 35:
+        return 100.0
+    if de_ratio <= 70:
+        return interpolate(de_ratio, 35.0, 70.0, 100.0, 50.0)
+    if de_ratio <= 150:
+        return interpolate(de_ratio, 70.0, 150.0, 50.0, 0.0)
+    return 0.0
+
+
+def score_size(market_cap: float) -> float:
+    """Score company size as a proxy for robustness."""
+
+    if np.isnan(market_cap):
+        return np.nan
+    if market_cap >= 50e9:
+        return 100.0
+    if market_cap >= 5e9:
+        return interpolate(market_cap, 5e9, 50e9, 50.0, 100.0)
+    return 0.0
+
+
+def compute_final_garp_score(
+    valuation_score: float,
+    growth_score: float,
+    balance_sheet_score: float,
+    size_score: float,
+) -> float:
+    """Weighted average of the sub-scores, renormalising missing ones."""
+
+    weights = [
+        (valuation_score, 0.30),
+        (growth_score, 0.30),
+        (balance_sheet_score, 0.25),
+        (size_score, 0.15),
+    ]
+    valid = [(score, weight) for score, weight in weights if not np.isnan(score)]
+    if not valid:
+        return 0.0
+
+    total_weight = sum(weight for _, weight in valid)
+    weighted_sum = sum(score * weight for score, weight in valid)
+    return float(np.clip(weighted_sum / total_weight, 0.0, 100.0))
+
+
+# ---------------------------------------------------------------------------
+# Screener orchestration
+# ---------------------------------------------------------------------------
+def run_screener(tickers: Iterable[str]) -> pd.DataFrame:
+    """Fetch data for ``tickers`` and compute filters plus scores."""
+
+    records: List[Dict[str, float]] = []
+    for ticker in tickers:
+        try:
+            records.append(fetch_fundamental_data(ticker))
+        except Exception:  # pragma: no cover - defensive logging
+            LOGGER.exception("Failed to fetch data for %s", ticker)
+            records.append(
+                {
+                    "ticker": ticker,
+                    "trailingPE": np.nan,
+                    "forwardPE": np.nan,
+                    "debtToEquity": np.nan,
+                    "eps_growth": np.nan,
+                    "pegRatio": np.nan,
+                    "marketCap": np.nan,
+                }
+            )
+
+    return build_dataframe(records)
+
+
+# ---------------------------------------------------------------------------
+# CLI helpers
+# ---------------------------------------------------------------------------
+def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the screener."""
+
+    parser = argparse.ArgumentParser(description="CAC 40 GARP screener")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=DEFAULT_OUTPUT,
+        help="Chemin du fichier CSV à générer (défaut: %(default)s)",
+    )
+    parser.add_argument(
+        "--max_rows",
+        type=int,
+        default=DEFAULT_MAX_ROWS,
+        help="Nombre de lignes à afficher pour l'aperçu global (défaut: %(default)s)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Active les logs DEBUG pour suivre les téléchargements",
+    )
+    return parser.parse_args()
+
+
 def configure_logging(verbose: bool = False) -> None:
-    """Configure the global logger for the CLI execution."""
+    """Configure logging format/level for CLI usage."""
 
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(level=level, format="%(levelname)s - %(message)s")
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for the screener."""
+def main() -> None:
+    """CLI entry point."""
 
-    parser = argparse.ArgumentParser(description="Screener GARP pour le CAC40")
-    parser.add_argument("--top_n", type=int, default=10, help="Nombre de lignes à afficher")
-    parser.add_argument(
-        "--output", type=str, default="cac40_garp_screener.csv", help="Chemin du fichier CSV de sortie"
-    )
-    parser.add_argument(
-        "--min_score",
-        type=float,
-        default=None,
-        help="Score minimum pour afficher une valeur (après tri décroissant)",
-    )
-    parser.add_argument("--verbose", action="store_true", help="Active les logs détaillés")
-    return parser.parse_args()
-
-
-def main(args: argparse.Namespace) -> None:
-    """Entrypoint used by the CLI to orchestrate the screener."""
-
+    args = parse_args()
     configure_logging(args.verbose)
+
     tickers = get_cac40_tickers()
-    LOGGER.info("Récupération des données pour %d tickers", len(tickers))
+    LOGGER.info("Téléchargement des fondamentaux pour %d tickers", len(tickers))
+
     df = run_screener(tickers)
-    df.sort_values(by="garp_score", ascending=False, inplace=True)
+    if df.empty:
+        LOGGER.warning("Aucune donnée récupérée : vérifier la connectivité réseau ou la liste de tickers")
+        return
 
-    filtered_df = df
-    if args.min_score is not None:
-        filtered_df = df[df["garp_score"] >= args.min_score]
+    df.sort_values(by=STRICT_SORT_COLUMNS, ascending=[False, False], inplace=True)
 
-    LOGGER.info("Top %d valeurs:", args.top_n)
-    print(filtered_df.head(args.top_n).to_string(index=False))
+    strict_df = df[df["strict_pass"]]
+    if strict_df.empty:
+        print("Aucune valeur ne passe le filtre strict GARP.")
+    else:
+        print("Valeurs qui passent le filtre strict GARP:")
+        print(strict_df.to_string(index=False))
+
+    print("\nAperçu global trié par score (top %d):" % args.max_rows)
+    print(df.head(args.max_rows).to_string(index=False))
 
     df.to_csv(args.output, index=False)
-    LOGGER.info("Résultats sauvegardés dans %s", args.output)
+    LOGGER.info("Résultats complets sauvegardés dans %s", args.output)
 
 
 if __name__ == "__main__":
-    cli_args = parse_args()
-    main(cli_args)
+    main()
