@@ -311,32 +311,91 @@ def apply_profile_overrides(
     normalize_nexus_weights(weights)
 
 
-def fetch_fundamental_data(ticker: str) -> Dict[str, float]:
-    """Fetch Yahoo Finance info for ``ticker`` and extract required fields."""
+def fetch_fundamental_data(ticker: str) -> Dict[str, Any]:
+    """Fetch Yahoo Finance info for ``ticker`` and aggressively normalize it."""
 
     yf_ticker = yf.Ticker(ticker)
-    info: Dict[str, Optional[float]] = yf_ticker.info or {}
+    info: Dict[str, Any] = yf_ticker.info or {}
 
-    # EPS growth proxy. Documented to use `earningsGrowth` with a fallback to
-    # `earningsQuarterlyGrowth` when annual data is not available.
-    eps_growth = info.get("earningsGrowth")
-    if eps_growth is None:
-        eps_growth = info.get("earningsQuarterlyGrowth")
+    current_price = safe_float(info.get("currentPrice"))
+    trailing_pe = safe_float(info.get("trailingPE"))
+    forward_pe = safe_float(info.get("forwardPE"))
+    trailing_eps = safe_float(info.get("trailingEps"))
+    forward_eps = safe_float(info.get("forwardEps"))
+
+    pe_ttm = trailing_pe
+    if np.isnan(pe_ttm) and not np.isnan(current_price) and not np.isnan(trailing_eps) and trailing_eps != 0:
+        pe_ttm = current_price / trailing_eps
+
+    pe_fwd = forward_pe
+    if np.isnan(pe_fwd) and not np.isnan(current_price) and not np.isnan(forward_eps) and forward_eps != 0:
+        pe_fwd = current_price / forward_eps
 
     debt_to_equity = safe_float(info.get("debtToEquity"))
     if not np.isnan(debt_to_equity) and debt_to_equity > 10:
         # Yahoo Finance sometimes exposes the ratio as a percentage (e.g. 45),
-        # so we convert it to a proportion when the raw value looks too large.
+        # so convert to a proportion when the value looks too large.
         debt_to_equity /= 100.0
+
+    if np.isnan(debt_to_equity):
+        try:
+            balance_sheet = yf_ticker.balance_sheet
+        except Exception:  # pragma: no cover - defensive
+            balance_sheet = None
+        if balance_sheet is not None and not balance_sheet.empty:
+            total_debt = np.nan
+            total_equity = np.nan
+            if "Total Debt" in balance_sheet.index:
+                debt_row = balance_sheet.loc["Total Debt"].dropna()
+                if not debt_row.empty:
+                    total_debt = safe_float(debt_row.iloc[0])
+            if "Total Stockholder Equity" in balance_sheet.index:
+                equity_row = balance_sheet.loc["Total Stockholder Equity"].dropna()
+                if not equity_row.empty:
+                    total_equity = safe_float(equity_row.iloc[0])
+            if not np.isnan(total_debt) and not np.isnan(total_equity) and total_equity != 0:
+                debt_to_equity = total_debt / total_equity
+
+    eps_cagr = np.nan
+    eps_cagr_source = "none"
+    try:
+        earnings = yf_ticker.earnings
+    except Exception:  # pragma: no cover - defensive
+        earnings = None
+    if earnings is not None and not earnings.empty:
+        earnings_series = earnings.get("Earnings")
+        if earnings_series is not None:
+            cleaned = earnings_series.dropna()
+            if len(cleaned) >= 2:
+                cleaned = cleaned.sort_index()
+                first = safe_float(cleaned.iloc[0])
+                last = safe_float(cleaned.iloc[-1])
+                periods = len(cleaned) - 1
+                if periods > 0 and first > 0 and last > 0:
+                    eps_cagr = (last / first) ** (1.0 / periods) - 1.0
+                    eps_cagr_source = "cagr"
+
+    if np.isnan(eps_cagr):
+        eps_growth = safe_float(info.get("earningsGrowth"))
+        if np.isnan(eps_growth):
+            eps_growth = safe_float(info.get("earningsQuarterlyGrowth"))
+        if not np.isnan(eps_growth):
+            eps_cagr = eps_growth
+            eps_cagr_source = "yoy"
+
+    peg = safe_float(info.get("pegRatio"))
+    if (np.isnan(peg) or peg <= 0) and not np.isnan(pe_fwd) and not np.isnan(eps_cagr) and eps_cagr > 0:
+        peg = pe_fwd / (eps_cagr * 100.0)
 
     return {
         "ticker": ticker,
-        "pe_ttm": safe_float(info.get("trailingPE")),
-        "pe_fwd": safe_float(info.get("forwardPE")),
+        "pe_ttm": pe_ttm,
+        "pe_fwd": pe_fwd,
         "debt_to_equity": debt_to_equity,
-        "eps_cagr": safe_float(eps_growth),
-        "peg": safe_float(info.get("pegRatio")),
+        "eps_cagr": eps_cagr,
+        "peg": peg,
         "market_cap": safe_float(info.get("marketCap")),
+        "eps_cagr_source": eps_cagr_source,
     }
 
 
@@ -383,7 +442,7 @@ def fetch_risk_data(ticker: str) -> Dict[str, float]:
     return metrics
 
 
-def build_dataframe(records: Iterable[Dict[str, float]], settings: Settings) -> pd.DataFrame:
+def build_dataframe(records: Iterable[Dict[str, Any]], settings: Settings) -> pd.DataFrame:
     """Create a DataFrame with boolean filters and scoring columns."""
 
     df = pd.DataFrame.from_records(records)
@@ -393,6 +452,43 @@ def build_dataframe(records: Iterable[Dict[str, float]], settings: Settings) -> 
     filters = settings.filters
     weights = settings.weights
     universe = settings.universe
+
+    for column in (
+        "pe_ttm",
+        "pe_fwd",
+        "debt_to_equity",
+        "eps_cagr",
+        "peg",
+        "market_cap",
+        "vol_1y",
+        "mdd_1y",
+        "adv_3m",
+    ):
+        if column not in df:
+            df[column] = np.nan
+
+    if "eps_cagr_source" not in df:
+        df["eps_cagr_source"] = "none"
+    else:
+        df["eps_cagr_source"] = df["eps_cagr_source"].fillna("none")
+
+    df["has_pe_ttm"] = df["pe_ttm"].apply(lambda v: bool(not np.isnan(v) and v > 0))
+    df["has_pe_fwd"] = df["pe_fwd"].apply(lambda v: bool(not np.isnan(v) and v > 0))
+    df["has_debt_to_equity"] = df["debt_to_equity"].apply(lambda v: bool(not np.isnan(v)))
+    df["has_eps_cagr"] = df["eps_cagr"].apply(lambda v: bool(not np.isnan(v)))
+    df["has_peg"] = df["peg"].apply(lambda v: bool(not np.isnan(v) and v > 0))
+    df["has_market_cap"] = df["market_cap"].apply(lambda v: bool(not np.isnan(v) and v > 0))
+    df["has_risk_data"] = df.apply(
+        lambda row: bool(
+            not np.isnan(row.get("vol_1y", np.nan))
+            and not np.isnan(row.get("mdd_1y", np.nan))
+            and not np.isnan(row.get("adv_3m", np.nan))
+        ),
+        axis=1,
+    )
+
+    df["data_ready_nexus"] = df.apply(compute_data_ready_nexus, axis=1)
+    df["data_ready_v1_1"] = df.apply(compute_data_ready_v1_1, axis=1)
 
     # Strict filter flags.
     df["per_ok"] = df["pe_ttm"].apply(
@@ -424,15 +520,18 @@ def build_dataframe(records: Iterable[Dict[str, float]], settings: Settings) -> 
     df["size_score"] = df["market_cap"].apply(score_size)
     df["garp_score"] = df.apply(lambda row: compute_garp_score(row, weights), axis=1)
 
-    # Risk metrics and score are expected to be part of the records already, but
-    # ensure the columns exist even if a ticker failed to download.
-    for column in ("vol_1y", "mdd_1y", "adv_3m"):
-        if column not in df:
-            df[column] = np.nan
+    # Risk metrics and score.
     df["risk_score"] = df.apply(compute_risk_score, axis=1)
-    df["safety_score"] = df["risk_score"].apply(compute_safety_score)
+    df["safety_score"] = df.apply(
+        lambda row: compute_safety_score(row.get("risk_score", np.nan))
+        if row.get("data_ready_nexus", False)
+        else np.nan,
+        axis=1,
+    )
     df["nexus_score"] = df.apply(
-        lambda row: compute_nexus_score(row["garp_score"], row["safety_score"], weights),
+        lambda row: compute_nexus_score(row["garp_score"], row["safety_score"], weights)
+        if row.get("data_ready_nexus", False)
+        else np.nan,
         axis=1,
     )
 
@@ -527,6 +626,50 @@ def score_size(market_cap: float) -> float:
     return 0.0
 
 
+def compute_data_ready_nexus(row: pd.Series) -> bool:
+    """Return True when enough inputs are present for Nexus scoring."""
+
+    requirements = (
+        ("pe_ttm", True),
+        ("pe_fwd", True),
+        ("debt_to_equity", False),
+        ("eps_cagr", True),
+        ("market_cap", True),
+        ("vol_1y", True),
+        ("mdd_1y", False),
+        ("adv_3m", True),
+    )
+    for column, must_be_positive in requirements:
+        value = row.get(column, np.nan)
+        if value is None or np.isnan(value):
+            return False
+        if column == "mdd_1y":
+            if value >= 0:
+                return False
+            continue
+        if must_be_positive and value <= 0:
+            return False
+    return True
+
+
+def compute_data_ready_v1_1(row: pd.Series) -> bool:
+    """Return True when inputs for the V1.1 binary score are ready."""
+
+    requirements = (
+        ("pe_ttm", True),
+        ("pe_fwd", True),
+        ("debt_to_equity", False),
+        ("eps_cagr", True),
+    )
+    for column, must_be_positive in requirements:
+        value = row.get(column, np.nan)
+        if value is None or np.isnan(value):
+            return False
+        if must_be_positive and value <= 0:
+            return False
+    return True
+
+
 def passes_hard_filters(row: pd.Series, filters: FilterSettings) -> bool:
     """Return True if ``row`` satisfies the strict GARP constraints."""
 
@@ -554,6 +697,9 @@ def passes_hard_filters(row: pd.Series, filters: FilterSettings) -> bool:
 
 def compute_garp_score(row: pd.Series, weights: WeightSettings) -> float:
     """Compute the 0-100 GARP score, even if hard filters fail."""
+
+    if not row.get("data_ready_nexus", False):
+        return np.nan
 
     pe_ttm = row.get("pe_ttm", np.nan)
     pe_fwd = row.get("pe_fwd", np.nan)
@@ -602,6 +748,9 @@ def compute_garp_score(row: pd.Series, weights: WeightSettings) -> float:
 
 def compute_risk_score(row: pd.Series) -> float:
     """Compute a 0-100 downside risk score (higher = riskier)."""
+
+    if not row.get("data_ready_nexus", False):
+        return np.nan
 
     vol = row.get("vol_1y", np.nan)
     mdd = row.get("mdd_1y", np.nan)
@@ -749,7 +898,7 @@ def compute_v1_1_score(row: pd.Series, filters: FilterSettings) -> int:
 
     if not row.get("universe_ok", False):
         return 0
-    if not row.get("data_complete_v1_1", False):
+    if not row.get("data_ready_v1_1", False):
         return 0
 
     score = 0
@@ -771,7 +920,7 @@ def compute_v1_1_score(row: pd.Series, filters: FilterSettings) -> int:
     if not np.isnan(eps) and eps > min_eps:
         score += 1
 
-    if not np.isnan(peg) and peg < filters.max_peg:
+    if not np.isnan(peg) and peg > 0 and peg < filters.max_peg:
         score += 1
 
     return score
@@ -782,7 +931,7 @@ def categorize_v1_1(row: pd.Series) -> str:
 
     if not row.get("universe_ok", False):
         return CATEGORY_EXCLUDED
-    if not row.get("data_complete_v1_1", False):
+    if not row.get("data_ready_v1_1", False):
         return CATEGORY_DATA_MISSING
 
     score = int(row.get("score_v1_1", 0))
@@ -799,7 +948,7 @@ def categorize_v1_1(row: pd.Series) -> str:
 def run_screener(tickers: Iterable[str], settings: Settings) -> pd.DataFrame:
     """Fetch data for ``tickers`` and compute filters plus scores."""
 
-    records: List[Dict[str, float]] = []
+    records: List[Dict[str, Any]] = []
     for ticker in tickers:
         try:
             record = fetch_fundamental_data(ticker)
@@ -813,6 +962,7 @@ def run_screener(tickers: Iterable[str], settings: Settings) -> pd.DataFrame:
                 "eps_cagr": np.nan,
                 "peg": np.nan,
                 "market_cap": np.nan,
+                "eps_cagr_source": "none",
             }
 
         record.update(fetch_risk_data(ticker))
@@ -883,6 +1033,21 @@ def print_ticker_diagnostics(
         print(f"  EPS growth (CAGR): {_format_float(row.get('eps_cagr', np.nan))}")
         print(f"  PEG ratio:         {_format_float(row.get('peg', np.nan))}")
         print(f"  Market cap:        {_format_float(row.get('market_cap', np.nan))}")
+        print(f"  EPS CAGR source:   {row.get('eps_cagr_source', 'none')}")
+        print()
+
+        print("Data readiness flags:")
+        print(
+            f"  has_pe_ttm={row.get('has_pe_ttm', False)} | has_pe_fwd={row.get('has_pe_fwd', False)}"
+        )
+        print(
+            f"  has_eps_cagr={row.get('has_eps_cagr', False)} | has_peg={row.get('has_peg', False)}"
+            f" | has_market_cap={row.get('has_market_cap', False)}"
+        )
+        print(
+            f"  has_risk_data={row.get('has_risk_data', False)} | data_ready_nexus={row.get('data_ready_nexus', False)}"
+            f" | data_ready_v1_1={row.get('data_ready_v1_1', False)}"
+        )
         print()
 
         print("Hard filter flags:")
@@ -931,7 +1096,8 @@ def print_ticker_diagnostics(
             f"(min_mcap = {_format_float(universe.min_market_cap)}, min_adv = {_format_float(universe.min_adv_3m)})"
         )
         print(
-            f"  data_complete_v1_1: {row.get('data_complete_v1_1', False)}"
+            f"  data_ready_v1_1: {row.get('data_ready_v1_1', False)}"
+            f" | data_complete_v1_1: {row.get('data_complete_v1_1', False)}"
             f" | score_v1_1: {row.get('score_v1_1', 0)}"
             f" | category_v1_1: {row.get('category_v1_1', 'NA')}"
         )
@@ -1037,7 +1203,7 @@ def main() -> None:
     LOGGER.info("Résultats complets sauvegardés dans %s", args.output)
 
     # OroTitan Nexus V1.1 overlay focusing on SBF120-style eligibility
-    eligible_v1 = df[(df["universe_ok"]) & (df["data_complete_v1_1"])].copy()
+    eligible_v1 = df[(df["universe_ok"]) & (df["data_ready_v1_1"])].copy()
     print("\n=== OroTitan V1.1 – SBF120 GARP filter (0–5 points) ===")
     if eligible_v1.empty:
         print("Aucune valeur éligible (universe_ok=False ou données manquantes).")

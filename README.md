@@ -32,8 +32,11 @@ python cac40_garp_screener.py --output cac40_screen_results.csv --max_rows 40
 - L'ensemble du tableau trié est exporté dans le fichier CSV fourni via
   `--output` (défaut : `cac40_screen_results.csv`). Le fichier contient aussi
   les colonnes `vol_1y`, `mdd_1y`, `adv_3m`, `risk_score`, `safety_score`,
-  `nexus_score`, ainsi que les drapeaux de la surcouche SBF120 (`universe_ok`,
-  `data_complete_v1_1`, `score_v1_1`, `category_v1_1`).
+  `nexus_score`, les drapeaux `has_*` (`has_pe_ttm`, `has_eps_cagr`, etc.),
+  `has_risk_data`, l'origine de la croissance (`eps_cagr_source`) ainsi que les
+  nouveaux indicateurs de complétude `data_ready_nexus` et `data_ready_v1_1`
+  utilisés par la couche Nexus/V1.1. Les drapeaux OroTitan restent présents
+  (`universe_ok`, `data_complete_v1_1`, `score_v1_1`, `category_v1_1`).
 
 ## Configuration optionnelle
 
@@ -143,12 +146,14 @@ Pour comprendre précisément pourquoi un titre obtient (ou non) un bon score,
 le flag `--detail` accepte un ou plusieurs tickers et affiche après le screener
 un rapport texte avec :
 
-- les fondamentaux téléchargés,
+- les fondamentaux téléchargés (avec la source de croissance EPS et les drapeaux
+  de complétude `has_*`),
 - le statut de chaque filtre dur avec ses seuils,
 - le détail des sous-scores GARP et des pondérations en vigueur,
 - les métriques de risque (volatilité, drawdown, ADV) et les scores
-  `risk/safety/nexus`,
-- les drapeaux de la surcouche V1.1 (éligibilité univers, score 0-5, catégorie).
+  `risk/safety/nexus` (calculés uniquement quand `data_ready_nexus` vaut True),
+- les drapeaux de la surcouche V1.1 (éligibilité univers, readiness
+  `data_ready_v1_1`, score 0-5, catégorie).
 
 ```bash
 python cac40_garp_screener.py --detail MC.PA OR.PA
