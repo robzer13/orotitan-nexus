@@ -23,11 +23,46 @@ import yaml
 # Universe configuration
 # ---------------------------------------------------------------------------
 CAC40_TICKERS: List[str] = [
-    "MC.PA",
-    "OR.PA",
-    "AI.PA",
-    "BNP.PA",
-    # TODO: compléter la liste complète du CAC 40
+    "AI.PA",  # Air Liquide
+    "AIR.PA",  # Airbus
+    "ALO.PA",  # Alstom
+    "ORA.PA",  # Orange
+    "BNP.PA",  # BNP Paribas
+    "ACA.PA",  # Crédit Agricole
+    "GLE.PA",  # Société Générale
+    "CS.PA",  # AXA
+    "EN.PA",  # Bouygues
+    "CAP.PA",  # Capgemini
+    "DG.PA",  # Vinci
+    "HO.PA",  # Thales
+    "ML.PA",  # Michelin
+    "MC.PA",  # LVMH
+    "OR.PA",  # L'Oréal
+    "RI.PA",  # Pernod Ricard
+    "PUB.PA",  # Publicis
+    "VIE.PA",  # Veolia
+    "VIV.PA",  # Vivendi
+    "SU.PA",  # Schneider Electric
+    "DSY.PA",  # Dassault Systèmes
+    "KER.PA",  # Kering
+    "EL.PA",  # EssilorLuxottica
+    "ENGI.PA",  # Engie
+    "TTE.PA",  # TotalEnergies
+    "SAF.PA",  # Safran
+    "STLA.PA",  # Stellantis
+    "BN.PA",  # Danone
+    "UL.PA",  # Unibail-Rodamco-Westfield
+    "SAN.PA",  # Sanofi
+    "LR.PA",  # Legrand
+    "RMS.PA",  # Hermès
+    "FR.PA",  # Valeo
+    "TEP.PA",  # Teleperformance
+    "WLN.PA",  # Worldline
+    "CA.PA",  # Carrefour
+    "SGO.PA",  # Saint-Gobain
+    "STM.PA",  # STMicroelectronics
+    "EDEN.PA",  # Edenred
+    "ERF.PA",  # Eurofins Scientific
 ]
 
 MAX_PE_TTM = 25.0

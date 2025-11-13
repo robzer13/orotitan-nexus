@@ -17,8 +17,9 @@ pip install -r requirements.txt
 python cac40_garp_screener.py --output cac40_screen_results.csv --max_rows 40
 ```
 
-- Compléter la constante `CAC40_TICKERS` dans `cac40_garp_screener.py` avec les
-  tickers Yahoo Finance du CAC 40.
+- La constante `CAC40_TICKERS` dans `cac40_garp_screener.py` contient déjà les
+  40 tickers Yahoo Finance (Air Liquide, Airbus, LVMH, Sanofi, etc.) ; adaptez-la
+  au besoin si la composition de l'indice évolue.
 - Le script télécharge les fondamentaux via `yfinance`, applique les six filtres
   stricts décrits dans le code puis calcule un score GARP pondéré (valuation,
   croissance, qualité du bilan, taille).
@@ -67,6 +68,20 @@ python cac40_garp_screener.py --config my_cac40_config.yaml --max_rows 50
 
 Si le fichier est absent ou invalide, le script retombe automatiquement sur les
 valeurs par défaut codées en dur.
+
+### Univers CAC 40 complet prêt à l'emploi
+
+Un fichier `configs/cac40_base.yaml` contient déjà les 40 tickers Yahoo Finance
+du CAC 40 ainsi que les seuils et poids par défaut. Il suffit alors d'appeler :
+
+```bash
+python cac40_garp_screener.py --config configs/cac40_base.yaml --profile balanced --max_rows 40 --output cac40_full.csv
+python cac40_garp_screener.py --config configs/cac40_base.yaml --profile defensive --output cac40_defensive.csv
+python cac40_garp_screener.py --config configs/cac40_base.yaml --profile offensive --output cac40_offensive.csv
+```
+
+Adaptez le YAML si la composition de l'indice change ou si vous souhaitez
+tester une sélection personnalisée de valeurs.
 
 ## Profils Nexus prêts à l'emploi
 
