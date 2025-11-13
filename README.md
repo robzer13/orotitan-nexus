@@ -26,44 +26,5 @@ python cac40_garp_screener.py --output cac40_screen_results.csv --max_rows 40
   du classement global (top N configurable via `--max_rows`).
 - L'ensemble du tableau trié est exporté dans le fichier CSV fourni via
   `--output` (défaut : `cac40_screen_results.csv`). Le fichier contient aussi
-  les colonnes `vol_1y`, `mdd_1y`, `adv_3m`, `risk_score`, `safety_score` et
-  `nexus_score` pour compléter la lecture fondamentale/risk.
-
-## Configuration optionnelle
-
-Tous les paramètres clés (univers de tickers, seuils des filtres GARP, poids des
-scores GARP et Nexus) peuvent être surchargés via un fichier YAML passé avec
-`--config` :
-
-```yaml
-universe:
-  tickers:
-    - "MC.PA"
-    - "OR.PA"
-    - "AI.PA"
-
-filters:
-  max_pe_ttm: 25.0
-  max_forward_pe: 15.0
-  max_debt_to_equity: 0.35
-  min_eps_cagr: 0.08
-  max_peg: 1.2
-  min_market_cap: 5000000000
-
-weights:
-  garp:
-    valuation: 0.30
-    growth: 0.30
-    balance_sheet: 0.25
-    size: 0.15
-  nexus:
-    quality: 0.65
-    safety: 0.35
-```
-
-```bash
-python cac40_garp_screener.py --config my_cac40_config.yaml --max_rows 50
-```
-
-Si le fichier est absent ou invalide, le script retombe automatiquement sur les
-valeurs par défaut codées en dur.
+  les colonnes `vol_1y`, `mdd_1y`, `adv_3m` et `risk_score` issues du module de
+  risque pour compléter la lecture fondamentale.

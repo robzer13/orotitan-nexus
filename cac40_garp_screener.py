@@ -11,13 +11,11 @@ from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import dataclass, field, fields
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
-import yaml
 
 # ---------------------------------------------------------------------------
 # Universe configuration
@@ -37,11 +35,7 @@ MIN_EPS_CAGR = 0.08  # 8 % par an par défaut
 MAX_PEG = 1.2
 MIN_MARKET_CAP = 5e9
 
-QUALITY_WEIGHT = 0.65
-SAFETY_WEIGHT = 0.35
-
-STRICT_SORT_COLUMNS = ["strict_pass", "nexus_score", "garp_score", "risk_score"]
-STRICT_SORT_ASCENDING = [False, False, False, True]
+STRICT_SORT_COLUMNS = ["strict_pass", "garp_score"]
 DEFAULT_OUTPUT = "cac40_screen_results.csv"
 DEFAULT_MAX_ROWS = 40
 TRADING_DAYS_PER_YEAR = 252
@@ -50,48 +44,13 @@ ADV_WINDOW_DAYS = 63  # ~3 months of trading days
 LOGGER = logging.getLogger("cac40_garp_screener")
 
 
-@dataclass
-class FilterSettings:
-    """Container for strict GARP filter thresholds."""
-
-    max_pe_ttm: float = MAX_PE_TTM
-    max_forward_pe: float = MAX_FORWARD_PE
-    max_debt_to_equity: float = MAX_DEBT_TO_EQUITY
-    min_eps_cagr: float = MIN_EPS_CAGR
-    max_peg: float = MAX_PEG
-    min_market_cap: float = MIN_MARKET_CAP
-
-
-@dataclass
-class WeightSettings:
-    """Weights applied to GARP sub-scores and Nexus blending."""
-
-    garp_valuation: float = 0.30
-    garp_growth: float = 0.30
-    garp_balance_sheet: float = 0.25
-    garp_size: float = 0.15
-    nexus_quality: float = QUALITY_WEIGHT
-    nexus_safety: float = SAFETY_WEIGHT
-
-
-@dataclass
-class Settings:
-    """Aggregate settings for the screener, including universe and weights."""
-
-    tickers: List[str] = field(default_factory=lambda: list(CAC40_TICKERS))
-    filters: FilterSettings = field(default_factory=FilterSettings)
-    weights: WeightSettings = field(default_factory=WeightSettings)
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def get_cac40_tickers(settings: Settings) -> List[str]:
-    """Return the list of tickers to evaluate, honoring config overrides."""
+def get_cac40_tickers() -> List[str]:
+    """Return the list of CAC 40 tickers to evaluate."""
 
-    if settings.tickers:
-        return settings.tickers
-    return list(CAC40_TICKERS)
+    return CAC40_TICKERS
 
 
 def safe_float(value: Optional[float]) -> float:
@@ -103,81 +62,6 @@ def safe_float(value: Optional[float]) -> float:
         return float(value)
     except (TypeError, ValueError):
         return np.nan
-
-
-def _apply_numeric_overrides(target: Any, overrides: Dict[str, Any]) -> None:
-    """Update numeric dataclass fields from ``overrides`` when possible."""
-
-    if not isinstance(overrides, dict):
-        return
-    valid_fields = {field.name for field in fields(target)}
-    for key, value in overrides.items():
-        if key not in valid_fields:
-            continue
-        converted = safe_float(value)
-        if np.isnan(converted):
-            continue
-        setattr(target, key, float(converted))
-
-
-def load_config(path: Optional[str]) -> Settings:
-    """Load YAML config overrides and return a populated :class:`Settings`."""
-
-    settings = Settings()
-    if not path:
-        return settings
-
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            raw_config = yaml.safe_load(handle) or {}
-    except FileNotFoundError:
-        LOGGER.warning("Config file %s not found. Using defaults.", path)
-        return settings
-    except Exception:  # pragma: no cover - defensive logging
-        LOGGER.warning("Unable to load config file %s. Using defaults.", path, exc_info=True)
-        return settings
-
-    if not isinstance(raw_config, dict):
-        LOGGER.warning("Config file %s has an invalid structure. Using defaults.", path)
-        return settings
-
-    universe_cfg = raw_config.get("universe")
-    if isinstance(universe_cfg, dict):
-        tickers = universe_cfg.get("tickers")
-        if isinstance(tickers, list) and tickers:
-            clean = [str(t).strip() for t in tickers if str(t).strip()]
-            if clean:
-                settings.tickers = clean
-
-    filters_cfg = raw_config.get("filters")
-    if isinstance(filters_cfg, dict):
-        _apply_numeric_overrides(settings.filters, filters_cfg)
-
-    weights_cfg = raw_config.get("weights")
-    if isinstance(weights_cfg, dict):
-        garp_cfg = weights_cfg.get("garp")
-        if isinstance(garp_cfg, dict):
-            mapping = {
-                "valuation": "garp_valuation",
-                "growth": "garp_growth",
-                "balance_sheet": "garp_balance_sheet",
-                "size": "garp_size",
-            }
-            for cfg_key, attr in mapping.items():
-                converted = safe_float(garp_cfg.get(cfg_key))
-                if np.isnan(converted):
-                    continue
-                setattr(settings.weights, attr, float(converted))
-
-        nexus_cfg = weights_cfg.get("nexus")
-        if isinstance(nexus_cfg, dict):
-            for cfg_key, attr in {"quality": "nexus_quality", "safety": "nexus_safety"}.items():
-                converted = safe_float(nexus_cfg.get(cfg_key))
-                if np.isnan(converted):
-                    continue
-                setattr(settings.weights, attr, float(converted))
-
-    return settings
 
 
 def fetch_fundamental_data(ticker: str) -> Dict[str, float]:
@@ -252,35 +136,32 @@ def fetch_risk_data(ticker: str) -> Dict[str, float]:
     return metrics
 
 
-def build_dataframe(records: Iterable[Dict[str, float]], settings: Settings) -> pd.DataFrame:
+def build_dataframe(records: Iterable[Dict[str, float]]) -> pd.DataFrame:
     """Create a DataFrame with boolean filters and scoring columns."""
 
     df = pd.DataFrame.from_records(records)
     if df.empty:
         return df
 
-    filters = settings.filters
-    weights = settings.weights
-
     # Strict filter flags.
     df["per_ok"] = df["pe_ttm"].apply(
-        lambda v: bool(not np.isnan(v) and v <= filters.max_pe_ttm)
+        lambda v: bool(not np.isnan(v) and v <= MAX_PE_TTM)
     )
     df["per_forward_ok"] = df["pe_fwd"].apply(
-        lambda v: bool(not np.isnan(v) and v <= filters.max_forward_pe)
+        lambda v: bool(not np.isnan(v) and v <= MAX_FORWARD_PE)
     )
     df["de_ok"] = df["debt_to_equity"].apply(
-        lambda v: bool(not np.isnan(v) and v <= filters.max_debt_to_equity)
+        lambda v: bool(not np.isnan(v) and v <= MAX_DEBT_TO_EQUITY)
     )
     df["eps_growth_ok"] = df["eps_cagr"].apply(
-        lambda v: bool(not np.isnan(v) and v >= filters.min_eps_cagr)
+        lambda v: bool(not np.isnan(v) and v >= MIN_EPS_CAGR)
     )
-    df["peg_ok"] = df["peg"].apply(lambda v: bool(not np.isnan(v) and v <= filters.max_peg))
+    df["peg_ok"] = df["peg"].apply(lambda v: bool(not np.isnan(v) and v <= MAX_PEG))
     df["mktcap_ok"] = df["market_cap"].apply(
-        lambda v: bool(not np.isnan(v) and v >= filters.min_market_cap)
+        lambda v: bool(not np.isnan(v) and v >= MIN_MARKET_CAP)
     )
 
-    df["strict_pass"] = df.apply(lambda row: passes_hard_filters(row, filters), axis=1)
+    df["strict_pass"] = df.apply(passes_hard_filters, axis=1)
 
     # Soft scores.
     df["valuation_score"] = df.apply(
@@ -290,7 +171,7 @@ def build_dataframe(records: Iterable[Dict[str, float]], settings: Settings) -> 
     df["growth_score"] = df["eps_cagr"].apply(score_growth)
     df["balance_sheet_score"] = df["debt_to_equity"].apply(score_balance_sheet)
     df["size_score"] = df["market_cap"].apply(score_size)
-    df["garp_score"] = df.apply(lambda row: compute_garp_score(row, weights), axis=1)
+    df["garp_score"] = df.apply(compute_garp_score, axis=1)
 
     # Risk metrics and score are expected to be part of the records already, but
     # ensure the columns exist even if a ticker failed to download.
@@ -298,11 +179,6 @@ def build_dataframe(records: Iterable[Dict[str, float]], settings: Settings) -> 
         if column not in df:
             df[column] = np.nan
     df["risk_score"] = df.apply(compute_risk_score, axis=1)
-    df["safety_score"] = df["risk_score"].apply(compute_safety_score)
-    df["nexus_score"] = df.apply(
-        lambda row: compute_nexus_score(row["garp_score"], row["safety_score"], weights),
-        axis=1,
-    )
 
     return df
 
@@ -389,7 +265,7 @@ def score_size(market_cap: float) -> float:
     return 0.0
 
 
-def passes_hard_filters(row: pd.Series, filters: FilterSettings) -> bool:
+def passes_hard_filters(row: pd.Series) -> bool:
     """Return True if ``row`` satisfies the strict GARP constraints."""
 
     pe_ttm = row.get("pe_ttm", np.nan)
@@ -399,22 +275,22 @@ def passes_hard_filters(row: pd.Series, filters: FilterSettings) -> bool:
     peg = row.get("peg", np.nan)
     mcap = row.get("market_cap", np.nan)
 
-    if np.isnan(pe_ttm) or pe_ttm <= 0 or pe_ttm > filters.max_pe_ttm:
+    if np.isnan(pe_ttm) or pe_ttm <= 0 or pe_ttm > MAX_PE_TTM:
         return False
-    if np.isnan(pe_fwd) or pe_fwd <= 0 or pe_fwd > filters.max_forward_pe:
+    if np.isnan(pe_fwd) or pe_fwd <= 0 or pe_fwd > MAX_FORWARD_PE:
         return False
-    if np.isnan(de) or de > filters.max_debt_to_equity:
+    if np.isnan(de) or de > MAX_DEBT_TO_EQUITY:
         return False
-    if np.isnan(eps_cagr) or eps_cagr < filters.min_eps_cagr:
+    if np.isnan(eps_cagr) or eps_cagr < MIN_EPS_CAGR:
         return False
-    if np.isnan(peg) or peg > filters.max_peg:
+    if np.isnan(peg) or peg > MAX_PEG:
         return False
-    if np.isnan(mcap) or mcap < filters.min_market_cap:
+    if np.isnan(mcap) or mcap < MIN_MARKET_CAP:
         return False
     return True
 
 
-def compute_garp_score(row: pd.Series, weights: WeightSettings) -> float:
+def compute_garp_score(row: pd.Series) -> float:
     """Compute the 0-100 GARP score, even if hard filters fail."""
 
     pe_ttm = row.get("pe_ttm", np.nan)
@@ -438,25 +314,25 @@ def compute_garp_score(row: pd.Series, weights: WeightSettings) -> float:
     size_score = score_size(mcap)
 
     subscores: List[float] = []
-    garp_weights: List[float] = []
+    weights: List[float] = []
 
-    for score_value, weight_value in (
-        (valuation_score, weights.garp_valuation),
-        (growth_score, weights.garp_growth),
-        (balance_score, weights.garp_balance_sheet),
-        (size_score, weights.garp_size),
-    ):
-        if np.isnan(score_value):
-            continue
-        subscores.append(score_value)
-        garp_weights.append(float(weight_value))
+    if not np.isnan(valuation_score):
+        subscores.append(valuation_score)
+        weights.append(0.30)
+    if not np.isnan(growth_score):
+        subscores.append(growth_score)
+        weights.append(0.30)
+    if not np.isnan(balance_score):
+        subscores.append(balance_score)
+        weights.append(0.25)
+    if not np.isnan(size_score):
+        subscores.append(size_score)
+        weights.append(0.15)
 
     if not subscores:
         return 0.0
 
-    weights_arr = np.array(garp_weights, dtype=float)
-    if np.all(weights_arr <= 0):
-        weights_arr = np.ones_like(weights_arr)
+    weights_arr = np.array(weights, dtype=float)
     weights_arr /= weights_arr.sum()
     subscores_arr = np.array(subscores, dtype=float)
     return float(np.clip(np.dot(weights_arr, subscores_arr), 0.0, 100.0))
@@ -522,44 +398,10 @@ def compute_risk_score(row: pd.Series) -> float:
     return float(np.clip(np.dot(weights_arr, subscores_arr), 0.0, 100.0))
 
 
-def compute_safety_score(risk_score: float) -> float:
-    """Return a 0-100 safety score as the inverse of ``risk_score``."""
-
-    if np.isnan(risk_score):
-        return np.nan
-    return float(np.clip(100.0 - risk_score, 0.0, 100.0))
-
-
-def compute_nexus_score(
-    garp_score: float, safety_score: float, weights: WeightSettings
-) -> float:
-    """Blend quality (garp) and safety scores into a 0-100 Nexus score."""
-
-    garp_nan = np.isnan(garp_score)
-    safety_nan = np.isnan(safety_score)
-
-    if garp_nan and safety_nan:
-        return 0.0
-    if garp_nan:
-        return float(np.clip(safety_score, 0.0, 100.0))
-    if safety_nan:
-        return float(np.clip(garp_score, 0.0, 100.0))
-
-    quality_weight = max(float(weights.nexus_quality), 0.0)
-    safety_weight = max(float(weights.nexus_safety), 0.0)
-    total = quality_weight + safety_weight
-    if total <= 0:
-        quality_weight = safety_weight = 1.0
-        total = 2.0
-
-    blended = (quality_weight * garp_score + safety_weight * safety_score) / total
-    return float(np.clip(blended, 0.0, 100.0))
-
-
 # ---------------------------------------------------------------------------
 # Screener orchestration
 # ---------------------------------------------------------------------------
-def run_screener(tickers: Iterable[str], settings: Settings) -> pd.DataFrame:
+def run_screener(tickers: Iterable[str]) -> pd.DataFrame:
     """Fetch data for ``tickers`` and compute filters plus scores."""
 
     records: List[Dict[str, float]] = []
@@ -581,7 +423,7 @@ def run_screener(tickers: Iterable[str], settings: Settings) -> pd.DataFrame:
         record.update(fetch_risk_data(ticker))
         records.append(record)
 
-    return build_dataframe(records, settings)
+    return build_dataframe(records)
 
 
 # ---------------------------------------------------------------------------
@@ -608,12 +450,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Active les logs DEBUG pour suivre les téléchargements",
     )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Chemin d'un fichier YAML pour surcharger les paramètres (optionnel)",
-    )
     return parser.parse_args()
 
 
@@ -630,16 +466,15 @@ def main() -> None:
     args = parse_args()
     configure_logging(args.verbose)
 
-    settings = load_config(args.config)
-    tickers = get_cac40_tickers(settings)
+    tickers = get_cac40_tickers()
     LOGGER.info("Téléchargement des fondamentaux pour %d tickers", len(tickers))
 
-    df = run_screener(tickers, settings)
+    df = run_screener(tickers)
     if df.empty:
         LOGGER.warning("Aucune donnée récupérée : vérifier la connectivité réseau ou la liste de tickers")
         return
 
-    df.sort_values(by=STRICT_SORT_COLUMNS, ascending=STRICT_SORT_ASCENDING, inplace=True)
+    df.sort_values(by=STRICT_SORT_COLUMNS, ascending=[False, False], inplace=True)
 
     strict_df = df[df["strict_pass"]]
     if strict_df.empty:
