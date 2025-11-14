@@ -32,8 +32,36 @@ python cac40_garp_screener.py --output cac40_screen_results.csv --max_rows 40
 - L'ensemble du tableau trié est exporté dans le fichier CSV fourni via
   `--output` (défaut : `cac40_screen_results.csv`). Le fichier contient aussi
   les colonnes `vol_1y`, `mdd_1y`, `adv_3m`, `risk_score`, `safety_score`,
-  `nexus_score`, ainsi que les drapeaux de la surcouche SBF120 (`universe_ok`,
-  `data_complete_v1_1`, `score_v1_1`, `category_v1_1`).
+  `nexus_score`, les drapeaux `has_*` (`has_pe_ttm`, `has_eps_cagr`, etc.),
+  `has_risk_data`, l'origine de la croissance (`eps_cagr_source`) ainsi que les
+  nouveaux indicateurs de complétude `data_ready_nexus` et `data_ready_v1_1`
+  utilisés par la couche Nexus/V1.1. Les drapeaux OroTitan restent présents
+  (`universe_ok`, `data_complete_v1_1`, `score_v1_1`, `category_v1_1`).
+
+## Architecture du package
+
+Le script monolithique historique a été refactoré en package Python `orotitan_nexus`
+avec des modules spécialisés :
+
+- `config.py` : chargement YAML, profils Nexus (`--profile`) et dataclasses
+  `FilterSettings`, `WeightSettings`, `UniverseSettings`.
+- `universe.py` : gestion des listes de tickers (CAC 40 par défaut, SBF120 via
+  YAML) et filtres d'univers (cap/ADV).
+- `data_fetch.py` : téléchargement `yfinance` encapsulé (fondamentaux + prix).
+- `normalization.py` : conversions agressives (`safe_float`, recalcul PER/PEG,
+  reconstitution D/E, calcul du CAGR EPS avec `eps_cagr_source`, métriques de
+  risque + drapeaux `has_*`, `data_ready_*`).
+- `filters.py` : fonctions pures pour les filtres durs, l'éligibilité
+  d'univers, les catégories V1.1.
+- `scoring.py` : sous-scores GARP, score GARP (0-100), module de risque,
+  `safety_score`, `nexus_score`, score binaire V1.1 (0-5) avec point bonus PEG.
+- `reporting.py` : affichages console (aperçu strict/global, overlay V1.1,
+  diagnostics `--detail`).
+- `cli.py` : parsing des flags (inchangés), orchestration complète, export CSV.
+
+Le fichier racine `cac40_garp_screener.py` sert désormais de simple wrapper qui
+appelle `orotitan_nexus.cli.main()` afin de conserver la compatibilité des
+commandes existantes.
 
 ## Configuration optionnelle
 
@@ -143,12 +171,14 @@ Pour comprendre précisément pourquoi un titre obtient (ou non) un bon score,
 le flag `--detail` accepte un ou plusieurs tickers et affiche après le screener
 un rapport texte avec :
 
-- les fondamentaux téléchargés,
+- les fondamentaux téléchargés (avec la source de croissance EPS et les drapeaux
+  de complétude `has_*`),
 - le statut de chaque filtre dur avec ses seuils,
 - le détail des sous-scores GARP et des pondérations en vigueur,
 - les métriques de risque (volatilité, drawdown, ADV) et les scores
-  `risk/safety/nexus`,
-- les drapeaux de la surcouche V1.1 (éligibilité univers, score 0-5, catégorie).
+  `risk/safety/nexus` (calculés uniquement quand `data_ready_nexus` vaut True),
+- les drapeaux de la surcouche V1.1 (éligibilité univers, readiness
+  `data_ready_v1_1`, score 0-5, catégorie).
 
 ```bash
 python cac40_garp_screener.py --detail MC.PA OR.PA
@@ -156,3 +186,30 @@ python cac40_garp_screener.py --detail MC.PA OR.PA
 
 Chaque ticker absent des résultats est signalé proprement pour éviter toute
 ambiguïté.
+
+## Philosophie data-quality
+
+- Les colonnes `has_*` et `data_ready_*` indiquent explicitement quelles métriques
+  sont exploitables. Si `data_ready_nexus` est `False`, le score GARP, le module
+  de risque, le `safety_score` et le `nexus_score` sont forcés à 0/NaN afin de
+  ne pas classer de titres sur des données partielles.
+- Le score binaire V1.1 nécessite uniquement les quatre champs fondamentaux
+  (PER ttm/fwd, D/E, CAGR EPS). Le PEG reste un bonus pour obtenir le 5e point.
+- `category_v1_1` passe à `DATA_MISSING` dès que les inputs requis manquent,
+  même si le titre est présent dans le CSV.
+
+## Tests automatisés
+
+Une suite `pytest` compacte garantit la reproductibilité :
+
+```bash
+pytest
+```
+
+Les tests couvrent les fonctions critiques (`normalization`, `scoring`) et un
+scénario end-to-end simulé (fetch `yfinance` monkeypatché). Avant livraison,
+vous pouvez également vérifier que le code se compile :
+
+```bash
+python -m compileall cac40_garp_screener.py orotitan_nexus
+```
