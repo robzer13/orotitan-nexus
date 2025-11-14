@@ -1,0 +1,60 @@
+import numpy as np
+import pandas as pd
+
+from orotitan_nexus import cli
+from orotitan_nexus.config import FilterSettings, WeightSettings, UniverseSettings
+from orotitan_nexus import data_fetch
+
+
+def _fake_raw_fundamentals(ticker: str):
+    info = {
+        "trailingPE": 20.0,
+        "forwardPE": 14.0,
+        "debtToEquity": 30.0,
+        "earningsGrowth": 0.12,
+        "pegRatio": np.nan,
+        "marketCap": 15e9,
+        "currentPrice": 100.0,
+        "trailingEps": 5.0,
+        "forwardEps": 6.5,
+    }
+    earnings = pd.DataFrame({"Earnings": pd.Series([1.0, 1.2, 1.5], index=[2019, 2020, 2021])})
+    balance_sheet = pd.DataFrame({0: [1e10, 5e9]}, index=["Total Debt", "Total Stockholder Equity"])
+    return {"info": info, "earnings": earnings, "balance_sheet": balance_sheet}
+
+
+def _fake_price_history(ticker: str, lookback_days: int = 252):
+    dates = pd.date_range("2022-01-01", periods=lookback_days, freq="B")
+    adj_close = np.linspace(90.0, 110.0, num=lookback_days)
+    data = pd.DataFrame(
+        {
+            "Adj Close": adj_close,
+            "Close": adj_close,
+            "Volume": np.full(lookback_days, 6_000_000),
+        },
+        index=dates,
+    )
+    return data
+
+
+def test_run_screener_with_monkeypatched_fetch(monkeypatch):
+    monkeypatch.setattr(data_fetch, "fetch_raw_fundamentals", _fake_raw_fundamentals)
+    monkeypatch.setattr(data_fetch, "fetch_price_history", _fake_price_history)
+
+    filters = FilterSettings()
+    weights = WeightSettings()
+    universe = UniverseSettings(tickers=["AAA.PA", "BBB.PA"])
+
+    df = cli.run_screener(filters, weights, universe)
+    assert not df.empty
+    required_columns = {
+        "score_v1_1",
+        "category_v1_1",
+        "garp_score",
+        "risk_score",
+        "nexus_score",
+        "data_complete_v1_1",
+    }
+    assert required_columns.issubset(df.columns)
+    assert (df["score_v1_1"] >= 3).any()
+    assert (df["category_v1_1"] != "DATA_MISSING").any()
