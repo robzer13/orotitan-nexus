@@ -127,3 +127,10 @@ weights:
   nexus:
     quality: 0.65
     safety: 0.35
+profile:
+  name: balanced
+  garp:
+    pe_ttm_max: 25.0
+    pe_fwd_max: 15.0
+    debt_to_equity_max: 0.35
+    eps_cagr_min: 0.15
