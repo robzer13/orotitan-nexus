@@ -36,10 +36,12 @@ def test_cli_cac40_garp_creates_outputs(tmp_path, monkeypatch):
         ]
     )
 
-    def _fake_run_screener(filters, weights, universe):  # pragma: no cover - deterministic stub
+    sample[GARP_FLAG_COLUMN] = [True, False]
+
+    def _fake_run_universe(*args, **kwargs):  # pragma: no cover - deterministic stub
         return sample.copy()
 
-    monkeypatch.setattr(cli_cac40_garp, "run_screener", _fake_run_screener)
+    monkeypatch.setattr(cli_cac40_garp, "run_universe", _fake_run_universe)
 
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text(

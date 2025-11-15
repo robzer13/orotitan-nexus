@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .config import FilterSettings, UniverseSettings, WeightSettings
+from .garp_rules import GARP_FLAG_COLUMN
 
 
 def _format_float(value: float, precision: int = 2) -> str:
@@ -145,6 +146,50 @@ def print_ticker_diagnostics(
         print(f"  nexus_score:         {_format_float(row.get('nexus_score', np.nan))}")
 
 
+def summarize_v1(df: pd.DataFrame, universe: UniverseSettings, profile_name: str | None) -> dict:
+    """Return structured V1.1 summary data for logging or printing."""
+
+    profile_label = profile_name or "balanced"
+    summary = {
+        "header": f"=== OroTitan V1.1 summary ({universe.name}, profile={profile_label}) ===",
+        "total": int(len(df)),
+        "data_complete": int(df.get("data_complete_v1_1", pd.Series(dtype=int)).sum()),
+        "strict_pass": int(df.get("strict_pass", pd.Series(dtype=int)).sum()),
+        "categories": {},
+        "top": [],
+    }
+
+    categories = [
+        "ELITE_V1_1",
+        "WATCHLIST_V1_1",
+        "REJECT_V1_1",
+        "DATA_MISSING",
+        "EXCLUDED_UNIVERSE",
+    ]
+    counts = (
+        df.get("category_v1_1", pd.Series(dtype=str)).value_counts().reindex(categories, fill_value=0)
+        if not df.empty
+        else pd.Series([0] * len(categories), index=categories)
+    )
+    summary["categories"] = {category: int(counts[category]) for category in categories}
+
+    ordering = ["score_v1_1", "nexus_score", "garp_score"]
+    asc = [False, False, False]
+    top_rows = df.sort_values(by=ordering, ascending=asc).head(5)
+    for idx, row in enumerate(top_rows.itertuples(), start=1):
+        summary["top"].append(
+            {
+                "rank": idx,
+                "ticker": row.ticker,
+                "score": int(getattr(row, "score_v1_1", 0)),
+                "category": getattr(row, "category_v1_1", "n/a"),
+                "reason": getattr(row, "universe_exclusion_reason", "") or "OK",
+            }
+        )
+
+    return summary
+
+
 def print_summary(
     df: pd.DataFrame,
     universe: UniverseSettings,
@@ -156,17 +201,44 @@ def print_summary(
         print("Aucune donnée pour générer un résumé.")
         return
 
+    summary = summarize_v1(df, universe, profile_name)
+    print(f"\n{summary['header']}")
+    print(f"Total universe        : {summary['total']}")
+    print(f"Data-complete (V1.1)  : {summary['data_complete']}")
+    print(f"  STRICT_PASS         : {summary['strict_pass']}")
+    for category, count in summary["categories"].items():
+        print(f"  {category:<18}: {count}")
+
+    print("\nTop 5 by score_v1_1:")
+    if not summary["top"]:
+        print("  (no data)")
+    else:
+        for entry in summary["top"]:
+            print(
+                f"  {entry['rank']}) {entry['ticker']:<8} score={entry['score']} "
+                f"cat={entry['category']} reason={entry['reason']}"
+            )
+
+
+def summarize_garp(
+    df: pd.DataFrame,
+    universe_name: str,
+    profile_name: str | None,
+) -> dict:
+    """Build summary data for the CAC40 GARP radar."""
+
     profile_label = profile_name or "balanced"
-    header = f"=== OroTitan V1.1 summary ({universe.name}, profile={profile_label}) ==="
-    print(f"\n{header}")
-
-    total = len(df)
-    data_complete = int(df.get("data_complete_v1_1", pd.Series(dtype=int)).sum())
-    print(f"Total universe        : {total}")
-    print(f"Data-complete (V1.1)  : {data_complete}")
-
-    strict_pass = int(df.get("strict_pass", pd.Series(dtype=int)).sum())
-    print(f"  STRICT_PASS         : {strict_pass}")
+    strict_mask = df[GARP_FLAG_COLUMN].fillna(False) if GARP_FLAG_COLUMN in df else pd.Series(False, index=df.index)
+    summary = {
+        "header": f"=== OroTitan CAC40 GARP Radar v1.4 ===",
+        "universe": universe_name,
+        "profile": profile_label,
+        "total": int(len(df)),
+        "data_complete": int(df.get("data_complete_v1_1", pd.Series(dtype=int)).sum()),
+        "strict_count": int(strict_mask.sum()),
+        "categories": {},
+        "top": [],
+    }
 
     categories = [
         "ELITE_V1_1",
@@ -175,28 +247,29 @@ def print_summary(
         "DATA_MISSING",
         "EXCLUDED_UNIVERSE",
     ]
-    cat_counts = (
-        df.get("category_v1_1", pd.Series(dtype=str))
-        .value_counts()
-        .reindex(categories, fill_value=0)
+    counts = (
+        df.get("category_v1_1", pd.Series(dtype=str)).value_counts().reindex(categories, fill_value=0)
+        if not df.empty
+        else pd.Series([0] * len(categories), index=categories)
     )
-    for category in categories:
-        print(f"  {category:<18}: {int(cat_counts[category])}")
+    summary["categories"] = {category: int(counts[category]) for category in categories}
 
-    print("\nTop 5 by score_v1_1:")
-    ordering = ["score_v1_1", "nexus_score", "garp_score"]
-    asc = [False, False, False]
-    sorted_df = df.sort_values(by=ordering, ascending=asc).head(5)
-    if sorted_df.empty:
-        print("  (no data)")
-    else:
-        for idx, row in enumerate(sorted_df.itertuples(), start=1):
-            reason = getattr(row, "universe_exclusion_reason", "") or "OK"
-            cat = getattr(row, "category_v1_1", "n/a")
-            print(
-                f"  {idx}) {row.ticker:<8} score={int(getattr(row, 'score_v1_1', 0))} "
-                f"cat={cat} reason={reason}"
-            )
+    top_df = (
+        df[strict_mask]
+        .sort_values(by=["score_v1_1", "market_cap"], ascending=[False, False])
+        .head(5)
+    )
+    for row in top_df.itertuples():
+        summary["top"].append(
+            {
+                "ticker": row.ticker,
+                "score": int(getattr(row, "score_v1_1", 0)),
+                "category": getattr(row, "category_v1_1", "NA"),
+                "reason": getattr(row, "universe_exclusion_reason", "") or "OK",
+            }
+        )
+
+    return summary
 
 
 def write_csv(df: pd.DataFrame, output_path: str | Path) -> Path:

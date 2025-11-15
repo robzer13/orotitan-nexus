@@ -110,6 +110,10 @@ class ProfileSettings:
     garp: GarpThresholds = field(default_factory=GarpThresholds)
 
 
+class ConfigError(ValueError):
+    """Raised when the provided YAML configuration is invalid."""
+
+
 def load_yaml_config(path: Optional[str]) -> Dict[str, Any]:
     """Load a YAML config file if available."""
 
@@ -273,4 +277,60 @@ def build_settings_from_config(
     normalize_nexus_weights(weights)
 
     profile = ProfileSettings(name=effective_profile, garp=garp_thresholds)
+    return filters, weights, universe, profile
+
+
+def _require_positive(value: float, label: str, errors: List[str]) -> None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        errors.append(f"{label} must be a number")
+        return
+    if numeric <= 0:
+        errors.append(f"{label} must be > 0 (got {value!r})")
+
+
+def validate_settings(
+    filters: FilterSettings,
+    universe: UniverseSettings,
+    profile: ProfileSettings,
+) -> None:
+    """Raise ``ConfigError`` if the instantiated settings are inconsistent."""
+
+    errors: List[str] = []
+
+    if not universe.tickers:
+        errors.append("universe.tickers must not be empty")
+    if not universe.name:
+        errors.append("universe.name must be provided")
+    _require_positive(universe.min_market_cap, "universe.min_market_cap", errors)
+    _require_positive(universe.min_adv_3m, "universe.min_adv_3m", errors)
+
+    _require_positive(filters.max_pe_ttm, "filters.max_pe_ttm", errors)
+    _require_positive(filters.max_forward_pe, "filters.max_forward_pe", errors)
+    _require_positive(filters.max_debt_to_equity, "filters.max_debt_to_equity", errors)
+    _require_positive(filters.min_eps_cagr_v1_1, "filters.min_eps_cagr_v1_1", errors)
+    _require_positive(filters.max_peg, "filters.max_peg", errors)
+    _require_positive(filters.min_market_cap, "filters.min_market_cap", errors)
+
+    garp = profile.garp if profile else GarpThresholds()
+    _require_positive(garp.pe_ttm_max, "profile.garp.pe_ttm_max", errors)
+    _require_positive(garp.pe_fwd_max, "profile.garp.pe_fwd_max", errors)
+    _require_positive(garp.debt_to_equity_max, "profile.garp.debt_to_equity_max", errors)
+    _require_positive(garp.eps_cagr_min, "profile.garp.eps_cagr_min", errors)
+    _require_positive(garp.peg_max, "profile.garp.peg_max", errors)
+
+    if errors:
+        raise ConfigError("; ".join(errors))
+
+
+def load_settings(
+    config_path: Optional[str],
+    profile_name: Optional[str],
+) -> Tuple[FilterSettings, WeightSettings, UniverseSettings, ProfileSettings]:
+    """Convenience helper for CLI/API layers."""
+
+    config_data = load_yaml_config(config_path)
+    filters, weights, universe, profile = build_settings_from_config(config_data, profile_name)
+    validate_settings(filters, universe, profile)
     return filters, weights, universe, profile
