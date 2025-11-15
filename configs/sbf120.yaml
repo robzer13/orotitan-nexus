@@ -134,4 +134,3 @@ profile:
     pe_fwd_max: 15.0
     debt_to_equity_max: 0.35
     eps_cagr_min: 0.15
-    peg_max: 1.2
