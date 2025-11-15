@@ -1,0 +1,69 @@
+universe:
+  tickers:
+    - "AI.PA"
+    - "AIR.PA"
+    - "ALO.PA"
+    - "ORA.PA"
+    - "BNP.PA"
+    - "ACA.PA"
+    - "GLE.PA"
+    - "CS.PA"
+    - "EN.PA"
+    - "CAP.PA"
+    - "DG.PA"
+    - "HO.PA"
+    - "ML.PA"
+    - "MC.PA"
+    - "OR.PA"
+    - "RI.PA"
+    - "PUB.PA"
+    - "VIE.PA"
+    - "VIV.PA"
+    - "SU.PA"
+    - "DSY.PA"
+    - "KER.PA"
+    - "EL.PA"
+    - "ENGI.PA"
+    - "TTE.PA"
+    - "SAF.PA"
+    - "STLA.PA"
+    - "BN.PA"
+    - "UL.PA"
+    - "SAN.PA"
+    - "LR.PA"
+    - "RMS.PA"
+    - "FR.PA"
+    - "TEP.PA"
+    - "WLN.PA"
+    - "CA.PA"
+    - "SGO.PA"
+    - "STM.PA"
+    - "EDEN.PA"
+    - "ERF.PA"
+  min_market_cap: 1000000000.0
+  min_adv_3m: 100000.0
+filters:
+  max_pe_ttm: 25.0
+  max_forward_pe: 15.0
+  max_debt_to_equity: 0.35
+  min_eps_cagr: 0.08
+  min_eps_cagr_v1_1: 0.15
+  max_peg: 1.2
+  min_market_cap: 5000000000.0
+weights:
+  garp:
+    valuation: 0.30
+    growth: 0.30
+    balance_sheet: 0.25
+    size: 0.15
+  nexus:
+    quality: 0.65
+    safety: 0.35
+profile:
+  name: balanced
+  garp:
+    pe_ttm_max: 25.0
+    pe_fwd_max: 15.0
+    debt_to_equity_max: 0.35
+    eps_cagr_min: 0.15
+    peg_max: 1.2
