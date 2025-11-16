@@ -1,7 +1,7 @@
 import pandas as pd
 
 from orotitan_nexus.config import UniverseSettings
-from orotitan_nexus.garp_rules import GARP_FLAG_COLUMN
+from orotitan_nexus.garp_rules import GARP_BUCKET_COLUMN, GARP_FLAG_COLUMN, GARP_SCORE_COLUMN
 from orotitan_nexus.reporting import summarize_garp, summarize_v1, write_csv
 
 
@@ -34,6 +34,8 @@ def test_summarize_helpers_return_counts():
             "strict_pass": [True],
             "data_complete_v1_1": [True],
             GARP_FLAG_COLUMN: [True],
+            GARP_SCORE_COLUMN: [88.0],
+            GARP_BUCKET_COLUMN: ["ELITE_GARP"],
         }
     )
     universe = UniverseSettings(name="TEST", tickers=["AAA.PA"])
@@ -44,3 +46,4 @@ def test_summarize_helpers_return_counts():
     garp_summary = summarize_garp(df, universe.name, "balanced")
     assert garp_summary["strict_count"] == 1
     assert garp_summary["top"][0]["ticker"] == "AAA.PA"
+    assert garp_summary["bucket_counts"]["ELITE_GARP"] == 1

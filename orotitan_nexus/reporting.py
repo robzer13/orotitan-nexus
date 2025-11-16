@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .config import FilterSettings, UniverseSettings, WeightSettings
-from .garp_rules import GARP_FLAG_COLUMN
+from .garp_rules import GARP_BUCKET_COLUMN, GARP_FLAG_COLUMN, GARP_SCORE_COLUMN
 
 
 def _format_float(value: float, precision: int = 2) -> str:
@@ -224,13 +224,15 @@ def summarize_garp(
     df: pd.DataFrame,
     universe_name: str,
     profile_name: str | None,
+    *,
+    header: str = "=== OroTitan CAC40 GARP Radar v1.7 ===",
 ) -> dict:
     """Build summary data for the CAC40 GARP radar."""
 
     profile_label = profile_name or "balanced"
     strict_mask = df[GARP_FLAG_COLUMN].fillna(False) if GARP_FLAG_COLUMN in df else pd.Series(False, index=df.index)
     summary = {
-        "header": f"=== OroTitan CAC40 GARP Radar v1.4 ===",
+        "header": header,
         "universe": universe_name,
         "profile": profile_label,
         "total": int(len(df)),
@@ -238,6 +240,7 @@ def summarize_garp(
         "strict_count": int(strict_mask.sum()),
         "categories": {},
         "top": [],
+        "bucket_counts": {},
     }
 
     categories = [
@@ -254,11 +257,37 @@ def summarize_garp(
     )
     summary["categories"] = {category: int(counts[category]) for category in categories}
 
-    top_df = (
-        df[strict_mask]
-        .sort_values(by=["score_v1_1", "market_cap"], ascending=[False, False])
-        .head(5)
+    bucket_counts = (
+        df.get(GARP_BUCKET_COLUMN, pd.Series(dtype=str))
+        .value_counts()
+        .to_dict()
+        if not df.empty
+        else {}
     )
+    summary["bucket_counts"] = {bucket: int(count) for bucket, count in bucket_counts.items()}
+
+    if "nexus_v2_bucket" in df.columns:
+        v2_counts = df["nexus_v2_bucket"].value_counts().to_dict()
+        summary["v2_bucket_counts"] = {bucket: int(count) for bucket, count in v2_counts.items()}
+
+    garp_df = df[strict_mask]
+    if not garp_df.empty:
+        if GARP_SCORE_COLUMN in garp_df.columns:
+            sort_by = [GARP_SCORE_COLUMN]
+            ascending = [False]
+        else:
+            sort_by = ["score_v1_1"] if "score_v1_1" in garp_df.columns else [garp_df.columns[0]]
+            ascending = [False]
+        if "score_v1_1" in garp_df.columns and "score_v1_1" not in sort_by:
+            sort_by.append("score_v1_1")
+            ascending.append(False)
+        if "market_cap" in garp_df.columns:
+            sort_by.append("market_cap")
+            ascending.append(False)
+        garp_df = garp_df.sort_values(by=sort_by, ascending=ascending)
+        top_df = garp_df.head(5)
+    else:
+        top_df = garp_df
     for row in top_df.itertuples():
         summary["top"].append(
             {

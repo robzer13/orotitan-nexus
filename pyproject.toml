@@ -23,3 +23,6 @@ dev = ["pytest"]
 
 [project.urls]
 homepage = "https://example.com/orotitan-nexus"
+
+[tool.setuptools]
+packages = ["orotitan_nexus"]

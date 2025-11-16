@@ -1,5 +1,3 @@
-
-# orotitan-nexus
 # Orotitan Nexus
 
 Ce dépôt contient un screener GARP pour les actions du CAC 40 (et, via YAML,
@@ -11,14 +9,14 @@ et un `nexus_score`. Une surcouche "V1.1" optionnelle ajoute des filtres
 liquidité/taille d'univers et un score binaire 0-5 (`score_v1_1`) pour classer
 les titres SBF120 en catégories `ELITE_V1_1`, `WATCHLIST_V1_1`, etc.
 
-## OroTitan Nexus Screener v1.4 – Production Gate
+## OroTitan Nexus Screener v1.5 – Production Gate
 
-La version 1.4 introduit une API Python officielle (`orotitan_nexus.api`) et un
+La version 1.5 consolide l'API Python officielle (`orotitan_nexus.api`) et un
 orchestrateur multi-univers. Outre les CLIs historiques, vous pouvez désormais
 script-er le moteur comme suit :
 
 ```python
-from orotitan_nexus.api import run_screen, run_cac40_garp
+from orotitan_nexus.api import run_screen, run_cac40_garp, run_custom_garp
 
 # Exécution V1.1 générique
 df, summary = run_screen(config_path="configs/sbf120.yaml", profile_name="balanced")
@@ -27,6 +25,14 @@ print(summary["total"], "titres analysés")
 # Radar CAC40 GARP strict 5/5
 full_df, radar_df, garp_summary = run_cac40_garp(config_path="configs/cac40.yaml")
 print("Strict passes:", garp_summary["strict_count"])
+
+# Radar strict GARP sur un univers custom
+full_custom, radar_custom, custom_summary = run_custom_garp(
+    config_path="configs/sbf120.yaml",
+    profile_name="balanced",
+    tickers=["MC.PA", "OR.PA", "SAN.PA"],
+)
+print(custom_summary["strict_count"], "titres 5/5 sur l'univers custom")
 ```
 
 Les CLIs s’appuient sur le même orchestrateur, garantissant un comportement
@@ -68,7 +74,7 @@ python cac40_garp_screener.py --output cac40_screen_results.csv --max_rows 40 --
   utilisés par la couche Nexus/V1.1. Les drapeaux OroTitan restent présents
   (`universe_ok`, `data_complete_v1_1`, `score_v1_1`, `category_v1_1`).
 
-### OroTitan CAC40 GARP Radar (v1.4)
+### OroTitan CAC40 GARP Radar (v1.6)
 
 Pour un focus "pur GARP" sur le CAC 40, une CLI dédiée applique strictement
 les 5 règles suivantes (paramétrables via `profile.garp`) :
@@ -81,9 +87,10 @@ les 5 règles suivantes (paramétrables via `profile.garp`) :
 
 Elle produit deux CSV :
 
-- `--output-full` (toutes les valeurs CAC40 + colonne booléenne `strict_pass_garp`)
-- `--output-radar` (uniquement les titres qui respectent les 5 règles, triés par
-  market cap)
+- `--output-full` (toutes les valeurs CAC40 + colonnes `strict_pass_garp`,
+  `strict_garp_score` et `strict_garp_bucket`).
+- `--output-radar` (uniquement les titres strict 5/5, triés par
+  `strict_garp_score`, `score_v1_1` puis market cap).
 
 ```bash
 python -m orotitan_nexus.cli_cac40_garp \
@@ -93,11 +100,105 @@ python -m orotitan_nexus.cli_cac40_garp \
   --output-radar /tmp/cac40_radar_garp.csv
 ```
 
-La console (et le logger) affichent un résumé synthétique (univers total,
-valeurs data-complete, compte par catégorie V1.1, top 5 des strict-pass GARP)
-ainsi que l’emplacement des CSV générés. Le module repose sur `apply_garp_rules`
-et s'aligne automatiquement sur les seuils définis dans la section
-`profile.garp` de vos YAML.
+La console (et le logger) affichent désormais un résumé enrichi : univers total,
+valeurs data-complete, compte par catégorie V1.1, distribution des buckets
+GARP (`ELITE`, `STRONG`, `BORDERLINE`, `REJECT`) et top strict-pass trié par
+`strict_garp_score`. Le module repose sur `apply_garp_rules` +
+`compute_garp_score` + `assign_garp_buckets` et s'aligne automatiquement sur les
+seuils définis dans `profile.garp`.
+
+### OroTitan Custom GARP Radar (v1.6)
+
+Le radar strict 5/5 peut désormais être appliqué à **n'importe quel univers** en
+fournissant vos propres tickers :
+
+```bash
+python -m orotitan_nexus.cli_custom_garp \
+  --config configs/sbf120.yaml \
+  --profile balanced \
+  --tickers "MC.PA,OR.PA,SAN.PA" \
+  --output-full /tmp/custom_full_garp.csv \
+  --output-radar /tmp/custom_radar_garp.csv
+```
+
+ou via un fichier CSV listant les tickers :
+
+```bash
+python -m orotitan_nexus.cli_custom_garp \
+  --config configs/sbf120.yaml \
+  --profile balanced \
+  --tickers-csv ./mes_tickers.csv \
+  --tickers-column ticker \
+  --output-full /tmp/custom_full_garp.csv \
+  --output-radar /tmp/custom_radar_garp.csv
+```
+
+La CLI nettoie les doublons, applique `data_complete_v1_1 == True` avant
+`apply_garp_rules`, calcule le score continu `strict_garp_score`, assigne un
+`strict_garp_bucket`, exporte un CSV complet et un CSV "radar" (optionnel) puis
+affiche un résumé : univers, profil, compte data-complete, strict-pass, buckets
+et top 5 trié par `strict_garp_score` / `score_v1_1` / market cap. La même
+logique est exposée via `run_custom_garp` côté API.
+
+```python
+from orotitan_nexus.api import run_custom_garp
+
+full_df, radar_df, summary = run_custom_garp(
+    config_path="configs/sbf120.yaml",
+    profile_name="balanced",
+    tickers=["MC.PA", "OR.PA", "SAN.PA"],
+)
+
+print(summary["bucket_counts"])
+print(radar_df[["ticker", "strict_pass_garp", "strict_garp_score", "strict_garp_bucket"]])
+```
+
+### GARP History & Drift (v1.7)
+
+La v1.7 ajoute un module d'historisation léger (`history.py`) capable :
+
+1. d'appendre chaque run dans un CSV (`--history-path`, paramètres API
+   `history_path`/`run_id`/`notes`) avec le total, `strict_garp_count` et la
+   distribution des buckets `ELITE/STRONG/BORDERLINE/REJECT` ;
+2. d'écrire un snapshot par run (`--snapshots-dir`) sous la forme
+   `garp_<run_id>.csv`.
+
+En combinant les snapshots avec `--compare-with-run-id`, la CLI génère un
+rapport de drift : nouveaux strict-pass, sorties, upgrades/downgrades de bucket.
+
+```bash
+python -m orotitan_nexus.cli_cac40_garp \
+  --config configs/cac40.yaml \
+  --profile balanced \
+  --history-path data/garp_history.csv \
+  --snapshots-dir data/garp_snapshots \
+  --run-id "2025-11-15-open" \
+  --notes "Pré-market earnings"
+
+python -m orotitan_nexus.cli_cac40_garp \
+  --config configs/cac40.yaml \
+  --profile balanced \
+  --history-path data/garp_history.csv \
+  --snapshots-dir data/garp_snapshots \
+  --run-id "2025-11-18-open" \
+  --compare-with-run-id "2025-11-15-open"
+```
+
+La même fonctionnalité est disponible pour la CLI custom ainsi que via l'API :
+
+```python
+from orotitan_nexus.api import run_custom_garp
+
+full_df, radar_df, summary = run_custom_garp(
+    config_path="configs/sbf120.yaml",
+    profile_name="balanced",
+    tickers=["MC.PA", "OR.PA", "SAN.PA"],
+    history_path="data/garp_history.csv",
+    run_id="2025-11-18-open",
+    notes="Radar custom luxe",
+)
+print(summary["bucket_counts"])
+```
 
 ## Architecture v1.4
 
@@ -123,12 +224,16 @@ avec des modules spécialisés :
   d'univers (avec `universe_exclusion_reason`) et les catégories V1.1.
 - `scoring.py` : sous-scores GARP, score GARP (0-100), module de risque,
   `safety_score`, `nexus_score`, score binaire V1.1 (0-5) avec point bonus PEG.
-- `garp_rules.py` : fonction pure `apply_garp_rules` qui applique les 5 règles
-  GARP (PER ttm/fwd, D/E, EPS CAGR, PEG) et ajoute `strict_pass_garp` sans
-  impacter les filtres historiques.
+- `garp_rules.py` : fonctions pures `apply_garp_rules`, `compute_garp_score` et
+  `assign_garp_buckets` qui appliquent les 5 règles GARP (PER ttm/fwd, D/E, EPS
+  CAGR, PEG), produisent `strict_pass_garp`, un score continu 0‑100
+  (`strict_garp_score`) ainsi qu'un bucket lisible (`strict_garp_bucket`).
 - `reporting.py` : affichages console (aperçu strict/global, overlay V1.1,
   diagnostics `--detail`, résumé `--summary`, écriture CSV testable) et
   fonctions `summarize_v1` / `summarize_garp` utilisées par les CLIs et l’API.
+- `history.py` : dataclass `GarpRunRecord`, append CSV des runs,
+  snapshots `garp_<run_id>.csv` et helper `compute_garp_diff` pour les rapports
+  de drift.
 - `cli.py` : parsing des flags (inchangés + `--summary`), orchestration complète,
   export CSV et diagnostics.
 - `cli_cac40_garp.py` : CLI "radar" dédiée CAC40 qui applique les 5 règles
@@ -146,14 +251,18 @@ Les tests unitaires s'exécutent depuis la racine du dépôt :
 python -m compileall cac40_garp_screener.py orotitan_nexus
 pytest
 python -m orotitan_nexus.cli_cac40_garp --config configs/cac40.yaml --profile balanced --output-full /tmp/cac40_full_garp.csv --output-radar /tmp/cac40_radar_garp.csv
+python -m orotitan_nexus.cli_custom_garp --config configs/sbf120.yaml --profile balanced --tickers "MC.PA,OR.PA,SAN.PA" --output-full /tmp/custom_full_garp.csv --output-radar /tmp/custom_radar_garp.csv
 ```
 
 Les fixtures synthétisent des `income_stmt` multi-annuels pour valider le calcul
 du CAGR (Net Income) ainsi que les drapeaux `has_eps_cagr` / `data_complete_v1_1`.
-Des tests dédiés (`tests/test_garp_rules.py`, `tests/test_cli_cac40_garp.py`,
-`tests/test_api.py`, `tests/test_orchestrator.py`, etc.) verrouillent les règles
-GARP (5/5), les CLIs radar et l’API. Toute modification des seuils ou de la
-logique doit maintenir cette suite au vert.
+Des tests dédiés (`tests/test_history.py`, `tests/test_garp_rules.py`,
+`tests/test_cli_cac40_garp.py`, `tests/test_cli_custom_garp.py`,
+`tests/test_api.py`, `tests/test_orchestrator.py`, etc.) verrouillent désormais
+les 5 règles strictes **et** la nouvelle couche `strict_garp_score` /
+`strict_garp_bucket`, l'historique (`append_history_record`, snapshots,
+drift). Toute modification des seuils ou de la logique doit maintenir cette
+suite au vert.
 
 ## Configuration optionnelle
 
@@ -304,6 +413,143 @@ ambiguïté.
   à `EXCLUDED_UNIVERSE` si la capitalisation/ADV n'atteint pas les seuils (la
   colonne `universe_exclusion_reason` explicite alors le motif).
 
+## Portfolio overlay & radar actionnable (v1.8)
+
+Le moteur peut optionnellement croiser un portefeuille local (CSV avec au moins
+`ticker`, `quantity`, `cost_basis`) avec le radar strict GARP pour distinguer :
+
+- les titres déjà en portefeuille qui passent les 5 règles (candidats à
+  renforcer ou à suivre),
+- les titres hors portefeuille qui passent les 5 règles (nouvelles idées).
+
+Des métriques simples d'évaluation (`owned`, `position_quantity`,
+`position_cost_basis`, `position_value`, `unrealized_pl`) sont ajoutées dans le
+CSV complet, et une option `--budget` propose une liste de nouvelles idées sous
+une enveloppe donnée (1 action par ticker pour l'illustration).
+
+Exemple CAC40 :
+
+```bash
+python -m orotitan_nexus.cli_cac40_garp \
+  --config configs/cac40.yaml \
+  --profile balanced \
+  --portfolio data/portfolio_pea.csv \
+  --budget 500.0 \
+  --output-full /tmp/cac40_full_garp.csv \
+  --output-radar /tmp/cac40_radar_garp.csv
+```
+
+## Offline GARP backtest (v1.9)
+
+Vous pouvez comparer hors-ligne la performance d'un portefeuille strict GARP
+équipondéré vs un benchmark équipondéré (toutes les valeurs `data_complete_v1_1`
+) à partir :
+
+- d'un snapshot CSV (export complet d'un run GARP) contenant au minimum
+  `ticker`, `strict_pass_garp`, `data_complete_v1_1`,
+- d'un CSV de prix longs avec `date`, `ticker`, `adj_close`.
+
+API Python :
+
+```python
+from orotitan_nexus.api import run_garp_backtest_offline
+
+df = run_garp_backtest_offline(
+    snapshot_path="history/cac40_snapshot.csv",
+    prices_path="data/cac40_prices.csv",
+    start_date="2025-01-02",
+    horizons=(21, 63, 252),
+)
+print(df)
+```
+
+CLI :
+
+```bash
+python -m orotitan_nexus.cli_garp_backtest \
+  --snapshot history/cac40_snapshot.csv \
+  --prices data/cac40_prices.csv \
+  --start-date 2025-01-02 \
+  --horizons 21,63,252
+```
+
+Tout est offline : les CSV de snapshot et de prix sont fournis par l'utilisateur
+et aucun téléchargement n'est effectué. Le rapport console affiche, pour chaque
+horizon, les rendements GARP, benchmark et l'excès de performance.
+
+## GARP Rule Diagnostics & Calibration (v2.0)
+
+Le module de diagnostics règle par règle permet d'évaluer, hors-ligne, la
+performance future des titres qui passent ou échouent chaque critère GARP (et
+le strict 5/5) sur plusieurs horizons :
+
+- Comparaison pass vs fail pour chaque règle (PER ttm, PER fwd, D/E, EPS CAGR,
+  PEG, strict 5/5) ;
+- Calculs offline à partir d'un snapshot CSV (avec `garp_*_ok`,
+  `strict_pass_garp`, `data_complete_v1_1`) et d'un CSV de prix longs (`date`,
+  `ticker`, `adj_close`).
+
+API Python :
+
+```python
+from orotitan_nexus.api import run_garp_diagnostics_offline
+
+diag = run_garp_diagnostics_offline(
+    snapshot_path="history/cac40_garp_snapshot_2025-01-02.csv",
+    prices_path="data/cac40_prices_2024-2025.csv",
+    start_date="2025-01-02",
+    horizons=[21, 63, 252],
+)
+print(diag)
+```
+
+CLI :
+
+```bash
+python -m orotitan_nexus.cli_garp_diagnostics \
+  --snapshot history/cac40_garp_snapshot_2025-01-02.csv \
+  --prices data/cac40_prices_2024-2025.csv \
+  --start-date 2025-01-02 \
+  --horizons 21,63,252
+```
+
+Tout reste offline et déterministe. Ces diagnostics servent à valider ou
+recalibrer les seuils GARP (25/15, 35 %, 15 %, PEG 1.2) et à suivre l'impact de
+chaque règle ; la fonctionnalité est couverte par des tests `pytest` et doit le
+rester.
+
+## Nexus GARP v2 (multi-factor)
+
+v2 ajoute, de manière optionnelle et entièrement pilotée par la config YAML, une couche multi-facteur sur le noyau strict GARP. Lorsque `profile.v2.enabled` est à `true`, le dataframe inclut :
+
+- `garp_score_v2` (dérivé des surfaces strictes),
+- `quality_score`, `momentum_score`, `risk_score_v2`, `macro_score`, `behavioral_score`,
+- un score global `nexus_v2_score` (0–100) et `nexus_v2_bucket` (V2_ELITE / V2_STRONG / V2_NEUTRAL / V2_WEAK / V2_REJECT).
+
+Les poids et seuils se règlent dans `profile.v2` (et les sous-sections `quality`, `momentum`, `risk`, `macro`, `behavioral`). Par défaut v2 est désactivé : le comportement v1.x reste identique tant que vous ne l’activez pas.
+
+### API rapide
+
+```python
+from orotitan_nexus.api import run_screen
+
+df, summary = run_screen(config_path="configs/cac40.yaml", profile_name="balanced")
+# si profile.v2.enabled=True dans la YAML, df contient nexus_v2_score / nexus_v2_bucket
+```
+
+### Backtest offline par score (quintiles)
+
+```bash
+python -m orotitan_nexus.cli_garp_backtest \
+  --snapshot history/cac40_snapshot.csv \
+  --prices data/cac40_prices.csv \
+  --start-date 2025-01-02 \
+  --horizons 21,63,252 \
+  --score-column nexus_v2_score
+```
+
+Les CLIs CAC40/custom continuent d’exposer les champs v1 ; si v2 est activé, les nouveaux champs apparaissent simplement dans les CSV complets/radar.
+
 ## Tests automatisés
 
 Une suite `pytest` compacte garantit la reproductibilité :
@@ -319,3 +565,29 @@ vous pouvez également vérifier que le code se compile :
 ```bash
 python -m compileall cac40_garp_screener.py orotitan_nexus
 ```
+
+### Nexus GARP v2.2 – Robustesse et Explicabilité
+
+La couche v2 reste 100 % optionnelle. Vous pouvez activer des contrôles supplémentaires via le YAML :
+
+```yaml
+profile:
+  v2:
+    enabled: true
+  walkforward:
+    enabled: true
+    n_splits: 4
+  sensitivity:
+    enabled: true
+    weight_perturbation_pct: 0.1
+  regime:
+    enabled: true
+    benchmark_ticker: "^FCHI"
+```
+
+Outils disponibles :
+
+- **CLI robustesse** : `python -m orotitan_nexus.cli_v2_robustness --config ... --snapshot ... --prices ...` produit un résumé walk-forward / sensibilité / régimes (option `--output-json`).
+- **Explication v2** : `python -m orotitan_nexus.cli_custom_garp ... --explain MC.PA` affiche une décomposition des contributions par pilier pour le ticker demandé (si le profil v2 est activé).
+
+Les nouvelles fonctionnalités sont purement additives et n’affectent pas les sorties v1.x. Toute modification future doit laisser la suite `pytest` au vert.

@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
 
 def configure_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(levelname)s - %(message)s")
+    logging.basicConfig(level=level, format="%(levelname)s - %(message)s", force=True)
 
 
 def run_screener(

@@ -16,7 +16,14 @@ from .filters import (
     compute_universe_ok,
     passes_strict_filters,
 )
-from .garp_rules import GARP_FLAG_COLUMN, apply_garp_rules
+from .garp_rules import (
+    GARP_BUCKET_COLUMN,
+    GARP_FLAG_COLUMN,
+    GARP_SCORE_COLUMN,
+    apply_garp_rules,
+    assign_garp_buckets,
+    compute_garp_score as compute_strict_garp_score,
+)
 from .normalization import build_record_for_ticker
 from .scoring import (
     compute_balance_sheet_score,
@@ -102,7 +109,7 @@ def _populate_boolean_flags(df: pd.DataFrame, filters: FilterSettings) -> None:
     df["mktcap_ok"] = df["market_cap"].apply(lambda v: bool(not np.isnan(v) and v >= filters.min_market_cap))
 
 
-def _apply_garp_column(
+def _apply_garp_columns(
     df: pd.DataFrame,
     *,
     apply_garp: bool,
@@ -112,6 +119,16 @@ def _apply_garp_column(
 
     if GARP_FLAG_COLUMN not in df:
         df[GARP_FLAG_COLUMN] = False
+    else:
+        df[GARP_FLAG_COLUMN] = df[GARP_FLAG_COLUMN].fillna(False)
+    if GARP_SCORE_COLUMN not in df:
+        df[GARP_SCORE_COLUMN] = 0.0
+    else:
+        df[GARP_SCORE_COLUMN] = pd.to_numeric(df[GARP_SCORE_COLUMN], errors="coerce").fillna(0.0)
+    if GARP_BUCKET_COLUMN not in df:
+        df[GARP_BUCKET_COLUMN] = "REJECT_GARP"
+    else:
+        df[GARP_BUCKET_COLUMN] = df[GARP_BUCKET_COLUMN].fillna("REJECT_GARP")
 
     if not apply_garp or thresholds is None or df.empty:
         return
@@ -121,7 +138,12 @@ def _apply_garp_column(
         return
 
     evaluated = apply_garp_rules(df.loc[mask].copy(), thresholds)
+    evaluated = compute_strict_garp_score(evaluated, thresholds)
+    evaluated = assign_garp_buckets(evaluated)
+
     df.loc[mask, GARP_FLAG_COLUMN] = evaluated[GARP_FLAG_COLUMN]
+    df.loc[mask, GARP_SCORE_COLUMN] = evaluated[GARP_SCORE_COLUMN]
+    df.loc[mask, GARP_BUCKET_COLUMN] = evaluated[GARP_BUCKET_COLUMN]
 
 
 def run_universe(
@@ -195,7 +217,7 @@ def run_universe(
     df["score_v1_1"] = df.apply(lambda row: compute_v1_1_score(row, filters), axis=1)
     df["category_v1_1"] = df.apply(categorize_v1_1, axis=1)
 
-    _apply_garp_column(df, apply_garp=apply_garp, thresholds=garp_thresholds)
+    _apply_garp_columns(df, apply_garp=apply_garp, thresholds=garp_thresholds)
 
     df.sort_values(by=STRICT_SORT_COLUMNS, ascending=STRICT_SORT_ASCENDING, inplace=True)
     return df

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, fields
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Literal
 
 try:  # pragma: no cover - optional dependency
     import yaml
@@ -108,6 +108,164 @@ class ProfileSettings:
 
     name: Optional[str] = None
     garp: GarpThresholds = field(default_factory=GarpThresholds)
+
+
+# --- Nexus v2 settings ----------------------------------------------------
+
+
+@dataclass
+class QualitySettings:
+    """Quality factor knobs for Nexus v2 (profitability/balance sheet)."""
+
+    roe_weight: float = 0.4
+    roa_weight: float = 0.3
+    margin_weight: float = 0.3
+    min_roe: float = 0.0
+    min_margin: float = 0.0
+
+
+@dataclass
+class MomentumSettings:
+    """Momentum factor lookbacks/weights for Nexus v2."""
+
+    lookback_short_days: int = 63
+    lookback_medium_days: int = 126
+    lookback_long_days: int = 252
+    short_weight: float = 0.3
+    medium_weight: float = 0.3
+    long_weight: float = 0.4
+
+
+@dataclass
+class RiskSettings:
+    """Risk factor thresholds for Nexus v2 (volatility/drawdown)."""
+
+    lookback_days: int = 252
+    max_vol: float = 0.4
+    max_drawdown: float = 0.5
+    vol_weight: float = 0.6
+    dd_weight: float = 0.4
+
+
+@dataclass
+class MacroSettings:
+    """Minimal macro stub for v2 (placeholder for future logic)."""
+
+    default_score: float = 50.0
+
+
+@dataclass
+class BehavioralSettings:
+    """Behavioral heuristics for v2 (light penalties/bonuses)."""
+
+    max_sector_weight: float = 0.4
+    concentration_penalty: float = 10.0
+    knife_catch_penalty: float = 5.0
+
+
+@dataclass
+class NexusV2Settings:
+    """Weights and bucket thresholds for Nexus v2 global score."""
+
+    garp_weight: float = 0.40
+    quality_weight: float = 0.25
+    momentum_weight: float = 0.20
+    risk_weight: float = 0.10
+    macro_weight: float = 0.05
+    behavioral_weight: float = 0.0
+    elite_min: float = 85.0
+    strong_min: float = 70.0
+    neutral_min: float = 50.0
+    weak_min: float = 30.0
+    enabled: bool = False
+
+
+@dataclass
+class CalibrationSettings:
+    """Grid-search controls for v2 weight tuning (opt-in)."""
+
+    enabled: bool = False
+    score_column: str = "nexus_v2_score"
+    benchmark_column: str = "benchmark_return"
+    horizon_days: int = 252
+    objective: str = "top_bucket_excess"
+    garp_weight_grid: tuple = (0.3, 0.4, 0.5)
+    quality_weight_grid: tuple = (0.2, 0.25, 0.3)
+    momentum_weight_grid: tuple = (0.15, 0.2, 0.25)
+    risk_weight_grid: tuple = (0.05, 0.1, 0.15)
+    macro_weight_grid: tuple = (0.0, 0.05)
+    behavioral_weight_grid: tuple = (0.0,)
+    normalize_weights: bool = True
+    max_turnover_penalty: float = 0.0
+
+
+@dataclass
+class WalkForwardSettings:
+    enabled: bool = False
+    n_splits: int = 4
+    min_period_days: int = 252
+    test_horizon_days: int = 252
+    score_column: str = "nexus_v2_score"
+    top_bucket_only: bool = True
+
+
+@dataclass
+class SensitivitySettings:
+    enabled: bool = False
+    weight_perturbation_pct: float = 0.1
+    garp_threshold_perturbation_pct: float = 0.1
+    n_random_draws: int = 16
+    score_column: str = "nexus_v2_score"
+    stability_metric: str = "spearman_corr"
+    top_k: int = 20
+
+
+@dataclass
+class RegimeSettings:
+    enabled: bool = False
+    benchmark_ticker: str = "^FCHI"
+    lookback_days: int = 63
+    bull_threshold: float = 0.05
+    bear_threshold: float = -0.05
+    neutral_label: str = "NEUTRAL"
+    bull_label: str = "BULL"
+    bear_label: str = "BEAR"
+
+
+@dataclass
+class ProfileSettingsV2(ProfileSettings):
+    """Profile including Nexus v2 controls (keeps backward compatibility)."""
+
+    quality: QualitySettings = field(default_factory=QualitySettings)
+    momentum: MomentumSettings = field(default_factory=MomentumSettings)
+    risk: RiskSettings = field(default_factory=RiskSettings)
+    macro: MacroSettings = field(default_factory=MacroSettings)
+    behavioral: BehavioralSettings = field(default_factory=BehavioralSettings)
+    v2: NexusV2Settings = field(default_factory=NexusV2Settings)
+    calibration: CalibrationSettings = field(default_factory=CalibrationSettings)
+    walkforward: WalkForwardSettings = field(default_factory=WalkForwardSettings)
+    sensitivity: SensitivitySettings = field(default_factory=SensitivitySettings)
+    regime: RegimeSettings = field(default_factory=RegimeSettings)
+
+
+def make_inline_universe(
+    name: str,
+    tickers: List[str],
+    template: Optional[UniverseSettings] = None,
+) -> UniverseSettings:
+    """Return a ``UniverseSettings`` instance for runtime/custom universes."""
+
+    cleaned = [ticker.strip() for ticker in tickers if ticker and ticker.strip()]
+    if not cleaned:
+        raise ConfigError("Custom universe requires at least one valid ticker")
+
+    base = template or UniverseSettings()
+    return UniverseSettings(
+        name=name or base.name,
+        tickers=cleaned,
+        min_market_cap=base.min_market_cap,
+        min_adv_3m=base.min_adv_3m,
+    )
 
 
 class ConfigError(ValueError):
@@ -222,7 +380,7 @@ def apply_profile_overrides(
 
 def build_settings_from_config(
     config_data: Dict[str, Any], profile_name: Optional[str]
-) -> Tuple[FilterSettings, WeightSettings, UniverseSettings, ProfileSettings]:
+) -> Tuple[FilterSettings, WeightSettings, UniverseSettings, ProfileSettingsV2]:
     """Instantiate settings from YAML + profile overrides."""
 
     filters = FilterSettings()
@@ -276,7 +434,48 @@ def build_settings_from_config(
     normalize_garp_weights(weights)
     normalize_nexus_weights(weights)
 
-    profile = ProfileSettings(name=effective_profile, garp=garp_thresholds)
+    quality_settings = QualitySettings()
+    momentum_settings = MomentumSettings()
+    risk_settings = RiskSettings()
+    macro_settings = MacroSettings()
+    behavioral_settings = BehavioralSettings()
+    v2_settings = NexusV2Settings()
+    calibration_settings = CalibrationSettings()
+    walkforward_settings = WalkForwardSettings()
+    sensitivity_settings = SensitivitySettings()
+    regime_settings = RegimeSettings()
+
+    if isinstance(profile_section, dict):
+        for section_name, instance in (
+            ("quality", quality_settings),
+            ("momentum", momentum_settings),
+            ("risk", risk_settings),
+            ("macro", macro_settings),
+            ("behavioral", behavioral_settings),
+            ("v2", v2_settings),
+            ("calibration", calibration_settings),
+            ("walkforward", walkforward_settings),
+            ("sensitivity", sensitivity_settings),
+            ("regime", regime_settings),
+        ):
+            section_data = profile_section.get(section_name, {})
+            if isinstance(section_data, dict):
+                _update_dataclass(instance, section_data)
+
+    profile = ProfileSettingsV2(
+        name=effective_profile,
+        garp=garp_thresholds,
+        quality=quality_settings,
+        momentum=momentum_settings,
+        risk=risk_settings,
+        macro=macro_settings,
+        behavioral=behavioral_settings,
+        v2=v2_settings,
+        calibration=calibration_settings,
+        walkforward=walkforward_settings,
+        sensitivity=sensitivity_settings,
+        regime=regime_settings,
+    )
     return filters, weights, universe, profile
 
 
@@ -293,7 +492,7 @@ def _require_positive(value: float, label: str, errors: List[str]) -> None:
 def validate_settings(
     filters: FilterSettings,
     universe: UniverseSettings,
-    profile: ProfileSettings,
+    profile: ProfileSettingsV2,
 ) -> None:
     """Raise ``ConfigError`` if the instantiated settings are inconsistent."""
 
@@ -327,7 +526,7 @@ def validate_settings(
 def load_settings(
     config_path: Optional[str],
     profile_name: Optional[str],
-) -> Tuple[FilterSettings, WeightSettings, UniverseSettings, ProfileSettings]:
+) -> Tuple[FilterSettings, WeightSettings, UniverseSettings, ProfileSettingsV2]:
     """Convenience helper for CLI/API layers."""
 
     config_data = load_yaml_config(config_path)
