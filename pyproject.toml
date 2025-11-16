@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orotitan-nexus"
+version = "0.1.0"
+description = "OroTitan Nexus: GARP + Nexus screening engine for CAC40/SBF120."
+authors = [
+    { name = "Robin", email = "dev@orotitan.local" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "yfinance",
+    "pandas",
+    "numpy",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+homepage = "https://example.com/orotitan-nexus"
+
+[tool.setuptools]
+packages = ["orotitan_nexus"]

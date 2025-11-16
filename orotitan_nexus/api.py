@@ -1,0 +1,255 @@
+"""Public Python API for OroTitan Nexus."""
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable, Optional, Sequence, Tuple
+
+import pandas as pd
+
+from .config import load_settings, make_inline_universe, ProfileSettingsV2
+from .garp_rules import GARP_FLAG_COLUMN, GARP_SCORE_COLUMN
+from .history import GarpRunRecord, append_history_record
+from .orchestrator import run_universe
+from .reporting import summarize_garp, summarize_v1
+from .prices import load_prices
+from .backtest import backtest_garp_vs_benchmark
+from .backtest import backtest_quintiles_by_score
+from .diagnostics import compute_rule_diagnostics
+from .scoring_v2 import apply_v2_scores
+from .explain_v2 import explain_ticker, add_explain_columns
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _default_run_id() -> str:
+    return datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+
+
+def _log_history(summary: dict, history_path: Optional[str], run_id: str, notes: Optional[str]) -> None:
+    if not history_path:
+        return
+    bucket_counts = summary.get("bucket_counts", {}) or {}
+    record = GarpRunRecord(
+        timestamp=datetime.utcnow(),
+        universe_name=summary.get("universe", ""),
+        profile_name=summary.get("profile", ""),
+        run_id=run_id,
+        total=int(summary.get("total", 0)),
+        data_complete_v1_1=int(summary.get("data_complete", 0)),
+        strict_garp_count=int(summary.get("strict_count", 0)),
+        elite_count=int(bucket_counts.get("ELITE_GARP", 0)),
+        strong_count=int(bucket_counts.get("STRONG_GARP", 0)),
+        borderline_count=int(bucket_counts.get("BORDERLINE_GARP", 0)),
+        reject_count=int(bucket_counts.get("REJECT_GARP", 0)),
+        notes=notes,
+    )
+    try:
+        append_history_record(Path(history_path), record)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        LOGGER.warning("Unable to append GARP history into %s: %s", history_path, exc)
+
+
+def run_screen(
+    *,
+    config_path: Optional[str] = None,
+    profile_name: Optional[str] = None,
+    apply_garp: bool = False,
+    explain: bool = False,
+) -> Tuple[pd.DataFrame, dict]:
+    """Execute the generic screener and return the dataframe plus summary stats."""
+
+    filters, weights, universe, profile = load_settings(config_path, profile_name)
+    df = run_universe(
+        filters,
+        weights,
+        universe,
+        apply_garp=apply_garp,
+        garp_thresholds=profile.garp if apply_garp else None,
+    )
+    if isinstance(profile, ProfileSettingsV2) and profile.v2.enabled:
+        df = apply_v2_scores(df, profile)
+        if explain:
+            df = add_explain_columns(df, profile)
+    summary = summarize_v1(df, universe, profile.name)
+    return df, summary
+
+
+def run_cac40_garp(
+    *,
+    config_path: Optional[str] = None,
+    profile_name: Optional[str] = None,
+    history_path: Optional[str] = None,
+    run_id: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Run the CAC40 GARP radar workflow and return full/radar dataframes."""
+
+    filters, weights, universe, profile = load_settings(config_path, profile_name)
+    df = run_universe(
+        filters,
+        weights,
+        universe,
+        apply_garp=True,
+        garp_thresholds=profile.garp,
+    )
+    if isinstance(profile, ProfileSettingsV2) and profile.v2.enabled:
+        df = apply_v2_scores(df, profile)
+    mask = df[GARP_FLAG_COLUMN] if GARP_FLAG_COLUMN in df else pd.Series(False, index=df.index)
+    radar_df = df[mask].copy()
+    if not radar_df.empty:
+        sort_by = [GARP_SCORE_COLUMN]
+        ascending = [False]
+        if "score_v1_1" in radar_df.columns:
+            sort_by.append("score_v1_1")
+            ascending.append(False)
+        if "market_cap" in radar_df.columns:
+            sort_by.append("market_cap")
+            ascending.append(False)
+        radar_df.sort_values(by=sort_by, ascending=ascending, inplace=True)
+    resolved_run_id = run_id or _default_run_id()
+    summary = summarize_garp(df, universe.name, profile.name)
+    summary["run_id"] = resolved_run_id
+    _log_history(summary, history_path, resolved_run_id, notes)
+    return df, radar_df, summary
+
+
+def run_custom_garp(
+    *,
+    config_path: Optional[str] = None,
+    profile_name: Optional[str] = None,
+    tickers: Iterable[str],
+    universe_name: str = "CUSTOM",
+    history_path: Optional[str] = None,
+    run_id: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Run the strict GARP radar on an arbitrary ticker universe."""
+
+    filters, weights, universe, profile = load_settings(config_path, profile_name)
+    cleaned = [ticker.strip() for ticker in tickers if ticker and ticker.strip()]
+    if not cleaned:
+        raise ValueError("Custom GARP radar requires at least one ticker")
+    inline_universe = make_inline_universe(universe_name or "CUSTOM", cleaned, template=universe)
+    df = run_universe(
+        filters,
+        weights,
+        inline_universe,
+        apply_garp=True,
+        garp_thresholds=profile.garp,
+    )
+    if isinstance(profile, ProfileSettingsV2) and profile.v2.enabled:
+        df = apply_v2_scores(df, profile)
+    mask = df[GARP_FLAG_COLUMN] if GARP_FLAG_COLUMN in df else pd.Series(False, index=df.index)
+    radar_df = df[mask].copy()
+    if not radar_df.empty:
+        sort_by = [GARP_SCORE_COLUMN, "score_v1_1"] if "score_v1_1" in radar_df.columns else [GARP_SCORE_COLUMN]
+        ascending = [False] * len(sort_by)
+        if "market_cap" in radar_df.columns:
+            sort_by.append("market_cap")
+            ascending.append(False)
+        radar_df.sort_values(by=sort_by, ascending=ascending, inplace=True)
+    resolved_run_id = run_id or _default_run_id()
+    summary = summarize_garp(
+        df,
+        inline_universe.name,
+        profile.name,
+        header="=== OroTitan Custom GARP Radar v1.7 ===",
+    )
+    summary["run_id"] = resolved_run_id
+    summary["profile_object"] = profile
+    _log_history(summary, history_path, resolved_run_id, notes)
+    return df, radar_df, summary
+
+
+def run_garp_backtest_offline(
+    snapshot_path: str,
+    prices_path: str,
+    start_date: str,
+    horizons: Sequence[int] = (21, 63, 252),
+) -> pd.DataFrame:
+    """Offline GARP backtest comparing strict passers vs a benchmark.
+
+    Parameters
+    ----------
+    snapshot_path : str
+        Path to a CSV snapshot of a GARP run (full dataframe) with at least
+        ``ticker``, ``strict_pass_garp``, and ``data_complete_v1_1`` columns.
+    prices_path : str
+        Path to a long-format prices CSV with ``date``, ``ticker``, and
+        ``adj_close`` columns.
+    start_date : str
+        ISO date string (YYYY-MM-DD) from which to start the backtest.
+    horizons : sequence of int
+        Trading-day horizons for which to compute performance.
+
+    Returns
+    -------
+    pd.DataFrame
+        Indexed by horizon_days with columns ``garp_return``, ``benchmark_return``,
+        ``excess_return``, ``n_garp_tickers``, and ``n_benchmark_tickers``.
+    """
+
+    snapshot_df = pd.read_csv(snapshot_path)
+    price_df = load_prices(Path(prices_path))
+    start_ts = pd.to_datetime(start_date, utc=False).normalize()
+    return backtest_garp_vs_benchmark(snapshot_df, price_df, start_ts, horizons)
+
+
+def run_garp_diagnostics_offline(
+    snapshot_path: str,
+    prices_path: str,
+    start_date: str,
+    horizons: Sequence[int] = (21, 63, 252),
+) -> pd.DataFrame:
+    """Offline GARP rule diagnostics comparing pass vs fail cohorts.
+
+    Parameters
+    ----------
+    snapshot_path : str
+        Path to a CSV snapshot with ticker-level GARP rule flags
+        (``garp_*_ok``), ``strict_pass_garp``, and ``data_complete_v1_1``.
+    prices_path : str
+        Path to a long-format prices CSV with ``date``, ``ticker``, and
+        ``adj_close`` columns.
+    start_date : str
+        ISO date string (YYYY-MM-DD) from which to start the forward horizons.
+    horizons : sequence of int
+        Trading-day horizons for which to compute performance.
+
+    Returns
+    -------
+    pd.DataFrame
+        MultiIndex (rule, horizon_days) with pass/fail returns and counts.
+    """
+
+    snapshot_df = pd.read_csv(snapshot_path)
+    price_df = load_prices(Path(prices_path))
+    start_ts = pd.to_datetime(start_date, utc=False).normalize()
+    return compute_rule_diagnostics(snapshot_df, price_df, start_ts, horizons)
+
+
+def run_score_backtest_offline(
+    snapshot_path: str,
+    prices_path: str,
+    start_date: str,
+    horizons: Sequence[int] = (21, 63, 252),
+    score_column: str = "nexus_v2_score",
+) -> pd.DataFrame:
+    """Offline quintile backtest on an arbitrary score column (v2-friendly)."""
+
+    snapshot_df = pd.read_csv(snapshot_path)
+    price_df = load_prices(Path(prices_path))
+    start_ts = pd.to_datetime(start_date, utc=False).normalize()
+    return backtest_quintiles_by_score(snapshot_df, price_df, start_ts, horizons, score_column)
+
+
+def explain_single_ticker(
+    df: pd.DataFrame, ticker: str, profile: Optional[ProfileSettingsV2]
+) -> dict:
+    """Return a lightweight explanation for a single ticker (v2 only)."""
+
+    if not isinstance(profile, ProfileSettingsV2) or not profile.v2.enabled:
+        return {}
+    return explain_ticker(df, ticker, profile)
