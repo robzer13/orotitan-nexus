@@ -568,7 +568,7 @@ python -m compileall cac40_garp_screener.py orotitan_nexus
 
 ### Nexus GARP v2.2 – Robustesse et Explicabilité
 
-La couche v2 reste 100 % optionnelle. Vous pouvez activer des contrôles supplémentaires via le YAML :
+La couche v2 reste 100 % optionnelle. Vous pouvez activer des contrôles supplémentaires via le YAML :
 
 ```yaml
 profile:
@@ -585,9 +585,9 @@ profile:
     benchmark_ticker: "^FCHI"
 ```
 
-Outils disponibles :
+Outils disponibles :
 
-- **CLI robustesse** : `python -m orotitan_nexus.cli_v2_robustness --config ... --snapshot ... --prices ...` produit un résumé walk-forward / sensibilité / régimes (option `--output-json`).
-- **Explication v2** : `python -m orotitan_nexus.cli_custom_garp ... --explain MC.PA` affiche une décomposition des contributions par pilier pour le ticker demandé (si le profil v2 est activé).
+- **CLI robustesse** : `python -m orotitan_nexus.cli_v2_robustness --config ... --snapshot ... --prices ...` produit un résumé walk-forward / sensibilité / régimes (option `--output-json`).
+- **Explication v2** : `python -m orotitan_nexus.cli_custom_garp ... --explain MC.PA` affiche une décomposition des contributions par pilier pour le ticker demandé (si le profil v2 est activé).
 
 Les nouvelles fonctionnalités sont purement additives et n’affectent pas les sorties v1.x. Toute modification future doit laisser la suite `pytest` au vert.
