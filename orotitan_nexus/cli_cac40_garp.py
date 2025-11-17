@@ -115,6 +115,15 @@ def main(argv: Optional[list[str]] = None) -> None:
                 diff = compute_garp_diff(previous, df)
                 _log_drift(diff)
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(...)
+    parser.add_argument("--config", ...)
+    parser.add_argument("--profile", ...)
+    parser.add_argument("--output-full", ...)
+    parser.add_argument("--output-radar", ...)
+    ...
+    return parser
+
 
 def _log_drift(diff: dict) -> None:
     LOGGER.info("=== GARP Drift Report ===")
