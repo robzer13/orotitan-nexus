@@ -591,3 +591,52 @@ Outils disponibles :
 - **Explication v2** : `python -m orotitan_nexus.cli_custom_garp ... --explain MC.PA` affiche une décomposition des contributions par pilier pour le ticker demandé (si le profil v2 est activé).
 
 Les nouvelles fonctionnalités sont purement additives et n’affectent pas les sorties v1.x. Toute modification future doit laisser la suite `pytest` au vert.
+
+### Nexus Core v6.8-lite (v2.3)
+
+Cette couche reste **désactivée par défaut** pour préserver les workflows v1/v2. Lorsqu’elle est activée (section `profile.nexus_core`), le screener ajoute :
+
+- Piliers 0–100 : Quality (Q), Value (V), Momentum (M), Risk inverse (R), Behavior (B), Fit (F).
+- Score global `nexus_core_score` (0–100) avec poids configurables (défaut : 30/20/20/15/10/5).
+- Score `nexus_exceptionality` (0–10) combinant Q, Fit, Nexus global et indicateurs optionnels (Diamond/Gold/Red flag).
+- Colonnes ajoutées : `nexus_core_q/v/m/r/b/f`, `nexus_core_score`, `nexus_exceptionality` (aucune colonne existante n’est modifiée).
+
+Configuration type :
+
+```yaml
+profile:
+  nexus_core:
+    enabled: true
+    weight_q: 0.30
+    weight_v: 0.20
+    weight_m: 0.20
+    weight_r: 0.15
+    weight_b: 0.10
+    weight_f: 0.05
+    fit_priority_sectors: ["Health", "Technology"]
+    fit_pea_bonus: 30
+    fit_liquidity_threshold: 1000000
+```
+
+Utilisation rapide (API) :
+
+```python
+from orotitan_nexus.api import run_custom_garp
+
+df, radar, summary = run_custom_garp(
+    config_path="configs/sbf120.yaml",
+    profile_name="balanced",  # profil où nexus_core.enabled=True
+    tickers=["MC.PA", "OR.PA", "SAN.PA"],
+)
+print(df[["ticker", "nexus_core_score", "nexus_exceptionality"]].head())
+```
+
+Les CLIs existantes continuent de fonctionner sans changement ; si la section `nexus_core` est activée, les CSV complets contiendront automatiquement les colonnes Nexus Core.
+
+### Nexus Valuation & Execution (v6.8-lite adjunct)
+
+- **Valuation (opt-in)** : prix cible composite P/FCF + EV/EBIT + PER anticipé, avec cap d’upside et repli vers un consensus si les fondamentaux manquent. Activez via `profile.valuation.enabled: true`.
+- **Scénarios Bear/Base/Bull** : helper générique (`Scenario`) pour calculer un prix pondéré par scénario (métrique × multiple – net debt) / actions.
+- **Exécution** : primitives d’entrée (breakout/pullback), stops ATR sectoriels, et sizing respectant budget/risque et un plafond 2 % ADV.
+- **ETF Nexus score** : score coût/track/liquidité/diversification/fit pour les lignes ETF (si `profile.etf_scoring.enabled`).
+- **Risque portefeuille** : métriques HHI et Top5 pour surveiller la concentration (helpers disponibles dans `portfolio_metrics`).

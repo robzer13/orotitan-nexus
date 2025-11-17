@@ -18,7 +18,11 @@ from .backtest import backtest_garp_vs_benchmark
 from .backtest import backtest_quintiles_by_score
 from .diagnostics import compute_rule_diagnostics
 from .scoring_v2 import apply_v2_scores
+from .nexus_core_scoring import apply_nexus_core_scores
+from .valuation import apply_valuation
+from .etf_scoring import compute_etf_nexus_score
 from .explain_v2 import explain_ticker, add_explain_columns
+from .playbook import run_nexus_playbook, PlaybookSummary
 
 LOGGER = logging.getLogger(__name__)
 
@@ -68,10 +72,17 @@ def run_screen(
         apply_garp=apply_garp,
         garp_thresholds=profile.garp if apply_garp else None,
     )
-    if isinstance(profile, ProfileSettingsV2) and profile.v2.enabled:
-        df = apply_v2_scores(df, profile)
-        if explain:
-            df = add_explain_columns(df, profile)
+    if isinstance(profile, ProfileSettingsV2):
+        if profile.v2.enabled:
+            df = apply_v2_scores(df, profile)
+            if explain:
+                df = add_explain_columns(df, profile)
+        if getattr(profile, "nexus_core", None) and profile.nexus_core.enabled:
+            df = apply_nexus_core_scores(df, profile)
+        if getattr(profile, "valuation", None) and profile.valuation.enabled:
+            df = apply_valuation(df, profile)
+        if getattr(profile, "etf_scoring", None) and profile.etf_scoring.enabled:
+            df["etf_nexus_score"] = compute_etf_nexus_score(df, profile.etf_scoring, profile)
     summary = summarize_v1(df, universe, profile.name)
     return df, summary
 
@@ -94,8 +105,15 @@ def run_cac40_garp(
         apply_garp=True,
         garp_thresholds=profile.garp,
     )
-    if isinstance(profile, ProfileSettingsV2) and profile.v2.enabled:
-        df = apply_v2_scores(df, profile)
+    if isinstance(profile, ProfileSettingsV2):
+        if profile.v2.enabled:
+            df = apply_v2_scores(df, profile)
+        if getattr(profile, "nexus_core", None) and profile.nexus_core.enabled:
+            df = apply_nexus_core_scores(df, profile)
+        if getattr(profile, "valuation", None) and profile.valuation.enabled:
+            df = apply_valuation(df, profile)
+        if getattr(profile, "etf_scoring", None) and profile.etf_scoring.enabled:
+            df["etf_nexus_score"] = compute_etf_nexus_score(df, profile.etf_scoring, profile)
     mask = df[GARP_FLAG_COLUMN] if GARP_FLAG_COLUMN in df else pd.Series(False, index=df.index)
     radar_df = df[mask].copy()
     if not radar_df.empty:
@@ -139,8 +157,11 @@ def run_custom_garp(
         apply_garp=True,
         garp_thresholds=profile.garp,
     )
-    if isinstance(profile, ProfileSettingsV2) and profile.v2.enabled:
-        df = apply_v2_scores(df, profile)
+    if isinstance(profile, ProfileSettingsV2):
+        if profile.v2.enabled:
+            df = apply_v2_scores(df, profile)
+        if getattr(profile, "nexus_core", None) and profile.nexus_core.enabled:
+            df = apply_nexus_core_scores(df, profile)
     mask = df[GARP_FLAG_COLUMN] if GARP_FLAG_COLUMN in df else pd.Series(False, index=df.index)
     radar_df = df[mask].copy()
     if not radar_df.empty:
@@ -253,3 +274,75 @@ def explain_single_ticker(
     if not isinstance(profile, ProfileSettingsV2) or not profile.v2.enabled:
         return {}
     return explain_ticker(df, ticker, profile)
+
+
+def run_playbook(
+    *,
+    config_path: Optional[str] = None,
+    profile_name: Optional[str] = None,
+    universe_override: Optional[Sequence[str]] = None,
+    portfolio_path: Optional[str] = None,
+    run_id: Optional[str] = None,
+) -> tuple[pd.DataFrame, PlaybookSummary]:
+    """Execute the full pipeline then derive a Nexus Playbook.
+
+    The playbook layer is opt-in via ``profile.playbook.enabled`` and simply
+    adds structured BUY/ADD/HOLD/WATCH/AVOID recommendations; existing v1/v2
+    outputs remain unchanged when it is disabled.
+    """
+
+    filters, weights, universe, profile = load_settings(config_path, profile_name)
+    if universe_override:
+        universe = make_inline_universe(universe.name, list(universe_override), template=universe)
+
+    df = run_universe(
+        filters,
+        weights,
+        universe,
+        apply_garp=True,
+        garp_thresholds=profile.garp,
+    )
+
+    if isinstance(profile, ProfileSettingsV2):
+        if profile.v2.enabled:
+            df = apply_v2_scores(df, profile)
+        if getattr(profile, "nexus_core", None) and profile.nexus_core.enabled:
+            df = apply_nexus_core_scores(df, profile)
+        if getattr(profile, "valuation", None) and profile.valuation.enabled:
+            df = apply_valuation(df, profile)
+        if getattr(profile, "etf_scoring", None) and profile.etf_scoring.enabled:
+            df["etf_nexus_score"] = compute_etf_nexus_score(df, profile.etf_scoring, profile)
+
+    # Portfolio overlay is optional; callers can supply a context dict if needed.
+    playbook_summary = PlaybookSummary(
+        profile_name=profile.name or "",
+        universe_name=universe.name,
+        run_id=run_id,
+        date=None,
+        portfolio_hhi=None,
+        portfolio_top5_weight=None,
+        portfolio_hhi_zone=None,
+        portfolio_top5_zone=None,
+        total_universe=int(len(df)),
+        total_strict_garp=int(df.get(GARP_FLAG_COLUMN, pd.Series([], dtype=bool)).sum()) if GARP_FLAG_COLUMN in df else 0,
+        total_core_enabled=int(df.get("nexus_core_score", pd.Series([], dtype=float)).notna().sum()),
+        total_owned=0,
+        decisions=[],
+        counts_by_action={},
+        top_by_core=[],
+        top_by_v2=[],
+        top_by_upside=[],
+        top_by_etf=[],
+    )
+
+    if isinstance(profile, ProfileSettingsV2) and profile.playbook.enabled:
+        playbook_summary = run_nexus_playbook(
+            df,
+            profile,
+            universe_name=universe.name,
+            run_id=run_id,
+            date_str=None,
+            portfolio_context=None,
+        )
+
+    return df, playbook_summary

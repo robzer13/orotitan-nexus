@@ -47,6 +47,7 @@ def _ensure_dataframe_schema(df: pd.DataFrame) -> None:
     """Guarantee all downstream columns exist with sane defaults."""
 
     numeric_columns = [
+        "price",
         "pe_ttm",
         "pe_fwd",
         "debt_to_equity",

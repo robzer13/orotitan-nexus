@@ -282,6 +282,7 @@ def build_record_for_ticker(
 
     record: Dict[str, float] = {
         "ticker": ticker,
+        "price": current_price,
         "pe_ttm": trailing_pe,
         "pe_fwd": forward_pe,
         "debt_to_equity": debt_to_equity,

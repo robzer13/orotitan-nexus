@@ -163,6 +163,246 @@ class BehavioralSettings:
     knife_catch_penalty: float = 5.0
 
 
+# --- Nexus Core (v6.8-lite) settings ---------------------------------------
+
+
+@dataclass
+class NexusCoreSettings:
+    """Configuration for the Nexus Core (v6.8-lite) multi-pillar score.
+
+    The weights below are deliberately flat and config-driven so operators can
+    adjust them in YAML without touching code. The feature is opt-in via the
+    ``enabled`` flag and remains disabled by default to preserve v1/v2 paths.
+    """
+
+    enabled: bool = False
+
+    # Global pillar weights (Q, V, M, R, B, F)
+    weight_q: float = 0.30
+    weight_v: float = 0.20
+    weight_m: float = 0.20
+    weight_r: float = 0.15
+    weight_b: float = 0.10
+    weight_f: float = 0.05
+
+    # Quality factor weights
+    q_roe_weight: float = 0.34
+    q_margin_weight: float = 0.33
+    q_fcf_quality_weight: float = 0.33
+
+    # Value factor weights
+    v_ev_ebit_weight: float = 0.30
+    v_pe_weight: float = 0.25
+    v_fcf_yield_weight: float = 0.20
+    v_div_yield_weight: float = 0.15
+    v_buyback_yield_weight: float = 0.10
+
+    # Momentum factor weights
+    m_1m_weight: float = 0.20
+    m_3m_weight: float = 0.20
+    m_6m_weight: float = 0.25
+    m_slope_weight: float = 0.20
+    m_dist_ph_weight: float = 0.15
+
+    # Risk inverse factor weights
+    r_vol_weight: float = 0.40
+    r_dd_weight: float = 0.30
+    r_beta_weight: float = 0.20
+    r_liquidity_weight: float = 0.10
+
+    # Behavior factor weights (light, exploratory)
+    b_gap_weight: float = 0.50
+    b_avwap_weight: float = 0.50
+
+    # Fit heuristics
+    fit_pea_bonus: float = 30.0
+    fit_priority_sector_bonus: float = 30.0
+    fit_liquidity_threshold: float = 1_000_000.0
+    fit_priority_sectors: List[str] = field(default_factory=list)
+
+    # Exceptionality adjustments
+    diamond_bonus: float = 1.0
+    gold_bonus: float = 0.5
+    red_flag_penalty: float = 0.5
+
+
+@dataclass
+class ValuationSettings:
+    """Composite fair-price configuration for the valuation layer.
+
+    The feature is opt-in (``enabled=False`` by default) and blends FCF, EV/EBIT,
+    and PE-based fair prices with conservative caps plus an optional consensus
+    fallback. All percentages are expressed as whole numbers (e.g. 25 = 25%).
+    """
+
+    enabled: bool = False
+    w_fcf: float = 0.40
+    w_ev_ebit: float = 0.35
+    w_pe: float = 0.25
+    max_upside_pct: float = 300.0
+    min_upside_pct: float = -80.0
+    enable_fallback_consensus: bool = True
+    divergence_warn_pct: float = 40.0
+    quality_adjust_low: float = 0.8
+    quality_adjust_high: float = 1.2
+
+
+@dataclass
+class ScenarioValuationSettings:
+    """Placeholder for scenario valuation controls (bear/base/bull)."""
+
+    enabled: bool = False
+
+
+@dataclass
+class EntrySettings:
+    """Entry parameters for breakout/pullback logic."""
+
+    breakout_ph20_buffer: float = 0.001
+    breakout_atr_multiplier: float = 0.25
+    breakout_min_volume_factor: float = 1.3
+    pullback_awap_atr: float = 0.25
+
+
+@dataclass
+class StopSettings:
+    """Sector/asset-dependent stop-loss parameters."""
+
+    tech_atr: float = 2.0
+    quality_atr: float = 1.9
+    energy_atr: float = 2.3
+    health_min_atr: float = 1.7
+    health_max_atr: float = 1.8
+    etf_min_drawdown: float = 0.09
+    etf_max_drawdown: float = 0.12
+
+
+@dataclass
+class SizingSettings:
+    """Position sizing guardrails."""
+
+    min_line_eur: float = 100.0
+    max_adv_fraction: float = 0.02
+
+
+@dataclass
+class EtfScoringSettings:
+    """Lightweight ETF score weights and liquidity thresholds."""
+
+    enabled: bool = False
+    w_cost: float = 0.25
+    w_track: float = 0.25
+    w_liq: float = 0.20
+    w_divers: float = 0.15
+    w_fit: float = 0.15
+    min_liquidity_eur: float = 100_000.0
+
+
+@dataclass
+class PortfolioRiskSettings:
+    """Portfolio concentration thresholds for alerts."""
+
+    hhi_ok_max: float = 0.18
+    hhi_alert_max: float = 0.25
+    top5_max: float = 0.55
+
+
+@dataclass
+class GeoSettings:
+    """Geographic targets and country→region mappings."""
+
+    target_regions: Dict[str, float] = field(
+        default_factory=lambda: {"EU": 0.6, "US": 0.2, "EM": 0.2}
+    )
+    max_region_overweight: float = 0.15
+    max_region_underweight: float = 0.20
+    default_region_map: Dict[str, str] = field(
+        default_factory=lambda: {
+            "FR": "EU",
+            "DE": "EU",
+            "NL": "EU",
+            "ES": "EU",
+            "IT": "EU",
+            "GB": "EU",
+            "US": "US",
+        }
+    )
+
+
+@dataclass
+class DiversificationSettings:
+    """Portfolio-level diversification thresholds and weights."""
+
+    max_single_position_weight: float = 0.10
+    max_top5_weight: float = 0.55
+    max_sector_weight: float = 0.25
+    sector_caps: Dict[str, float] = field(default_factory=dict)
+    max_hhi: float = 0.25
+    warn_hhi: float = 0.18
+    hhi_weight: float = 0.4
+    top5_weight: float = 0.3
+    sector_weight: float = 0.3
+
+
+@dataclass
+class CompatibilitySettings:
+    """Line-level compatibility scoring weights and bonuses."""
+
+    geo_weight: float = 0.4
+    sector_weight: float = 0.3
+    correlation_weight: float = 0.2
+    liquidity_weight: float = 0.1
+    min_pea_bonus: float = 10.0
+    sector_priority_bonus: float = 10.0
+
+
+@dataclass
+class PlaybookThresholds:
+    """Decision thresholds for the Nexus Playbook engine."""
+
+    min_core_score_buy: float = 75.0
+    min_core_score_add: float = 65.0
+    min_core_score_hold: float = 55.0
+
+    min_v2_score_buy: float = 80.0
+    min_v2_score_add: float = 70.0
+
+    min_exceptionality_buy: float = 7.0
+    min_exceptionality_core: float = 5.0
+
+    min_upside_buy_pct: float = 25.0
+    min_upside_add_pct: float = 15.0
+    max_tolerable_downside_hold_pct: float = -10.0
+
+    max_natr_for_new_positions: float = 5.0
+    max_beta_for_defensive_profile: float = 1.4
+
+    min_momentum_score_buy: float = 55.0
+    min_momentum_score_add: float = 50.0
+
+
+@dataclass
+class PlaybookSettings:
+    """Top-level toggles and defaults for the Nexus Playbook."""
+
+    enabled: bool = False
+    thresholds: PlaybookThresholds = field(default_factory=PlaybookThresholds)
+
+    label_buy: str = "BUY"
+    label_add: str = "ADD"
+    label_hold: str = "HOLD"
+    label_watch: str = "WATCH"
+    label_avoid: str = "AVOID"
+    label_red_flag: str = "RED_FLAG"
+
+    max_new_positions_per_run: int = 10
+    max_add_positions_per_run: int = 5
+    max_total_candidate_lines: int = 40
+
+    default_budget_per_line_eur: float = 300.0
+    default_risk_fraction_per_trade: float = 0.008
+
+
 @dataclass
 class NexusV2Settings:
     """Weights and bucket thresholds for Nexus v2 global score."""
@@ -246,6 +486,18 @@ class ProfileSettingsV2(ProfileSettings):
     walkforward: WalkForwardSettings = field(default_factory=WalkForwardSettings)
     sensitivity: SensitivitySettings = field(default_factory=SensitivitySettings)
     regime: RegimeSettings = field(default_factory=RegimeSettings)
+    nexus_core: NexusCoreSettings = field(default_factory=NexusCoreSettings)
+    valuation: ValuationSettings = field(default_factory=ValuationSettings)
+    scenario_valuation: ScenarioValuationSettings = field(default_factory=ScenarioValuationSettings)
+    entry: EntrySettings = field(default_factory=EntrySettings)
+    stops: StopSettings = field(default_factory=StopSettings)
+    sizing: SizingSettings = field(default_factory=SizingSettings)
+    etf_scoring: EtfScoringSettings = field(default_factory=EtfScoringSettings)
+    portfolio_risk: PortfolioRiskSettings = field(default_factory=PortfolioRiskSettings)
+    playbook: PlaybookSettings = field(default_factory=PlaybookSettings)
+    geo: GeoSettings = field(default_factory=GeoSettings)
+    diversification: DiversificationSettings = field(default_factory=DiversificationSettings)
+    compatibility: CompatibilitySettings = field(default_factory=CompatibilitySettings)
 
 
 def make_inline_universe(
@@ -444,6 +696,18 @@ def build_settings_from_config(
     walkforward_settings = WalkForwardSettings()
     sensitivity_settings = SensitivitySettings()
     regime_settings = RegimeSettings()
+    nexus_core_settings = NexusCoreSettings()
+    valuation_settings = ValuationSettings()
+    scenario_settings = ScenarioValuationSettings()
+    entry_settings = EntrySettings()
+    stop_settings = StopSettings()
+    sizing_settings = SizingSettings()
+    etf_settings = EtfScoringSettings()
+    portfolio_risk_settings = PortfolioRiskSettings()
+    playbook_settings = PlaybookSettings()
+    geo_settings = GeoSettings()
+    diversification_settings = DiversificationSettings()
+    compatibility_settings = CompatibilitySettings()
 
     if isinstance(profile_section, dict):
         for section_name, instance in (
@@ -457,10 +721,29 @@ def build_settings_from_config(
             ("walkforward", walkforward_settings),
             ("sensitivity", sensitivity_settings),
             ("regime", regime_settings),
+            ("nexus_core", nexus_core_settings),
+            ("valuation", valuation_settings),
+            ("scenario_valuation", scenario_settings),
+            ("entry", entry_settings),
+            ("stops", stop_settings),
+            ("sizing", sizing_settings),
+            ("etf_scoring", etf_settings),
+            ("portfolio_risk", portfolio_risk_settings),
+            ("playbook", playbook_settings),
+            ("geo", geo_settings),
+            ("diversification", diversification_settings),
+            ("compatibility", compatibility_settings),
         ):
             section_data = profile_section.get(section_name, {})
             if isinstance(section_data, dict):
-                _update_dataclass(instance, section_data)
+                if section_name == "playbook":
+                    thresholds_data = section_data.get("thresholds", {})
+                    cleaned = {k: v for k, v in section_data.items() if k != "thresholds"}
+                    _update_dataclass(instance, cleaned)
+                    if isinstance(thresholds_data, dict):
+                        _update_dataclass(playbook_settings.thresholds, thresholds_data)
+                else:
+                    _update_dataclass(instance, section_data)
 
     profile = ProfileSettingsV2(
         name=effective_profile,
@@ -475,6 +758,18 @@ def build_settings_from_config(
         walkforward=walkforward_settings,
         sensitivity=sensitivity_settings,
         regime=regime_settings,
+        nexus_core=nexus_core_settings,
+        valuation=valuation_settings,
+        scenario_valuation=scenario_settings,
+        entry=entry_settings,
+        stops=stop_settings,
+        sizing=sizing_settings,
+        etf_scoring=etf_settings,
+        portfolio_risk=portfolio_risk_settings,
+        playbook=playbook_settings,
+        geo=geo_settings,
+        diversification=diversification_settings,
+        compatibility=compatibility_settings,
     )
     return filters, weights, universe, profile
 
