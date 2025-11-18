@@ -98,6 +98,15 @@ python -m orotitan_nexus.cli_cac40_garp \
   --profile balanced \
   --output-full /tmp/cac40_full_garp.csv \
   --output-radar /tmp/cac40_radar_garp.csv
+
+Avec un portefeuille PEA (CSV `ticker,quantity,cost_basis`) pour marquer les lignes déjà détenues :
+
+python -m orotitan_nexus.cli_cac40_garp \
+  --config configs/cac40.yaml \
+  --profile balanced \
+  --portfolio offline/portfolios/pea_2025-11-17.csv \
+  --output-full data/cac40_full_with_pea.csv \
+  --output-radar data/cac40_radar_with_pea.csv
 ```
 
 La console (et le logger) affichent désormais un résumé enrichi : univers total,

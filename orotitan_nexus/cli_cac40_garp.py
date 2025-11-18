@@ -36,6 +36,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--notes", type=str, default=None, help="Optional notes stored in history")
     parser.add_argument("--snapshots-dir", type=str, default=None, help="Folder for per-run ticker snapshots")
     parser.add_argument("--compare-with-run-id", type=str, default=None, help="Previous run_id to diff against")
+    parser.add_argument("--portfolio", type=str, default=None, help="Optional portfolio CSV (ticker,quantity,cost_basis) for ownership-aware summary")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     return parser.parse_args(argv)
 
@@ -52,6 +53,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             history_path=args.history_path,
             run_id=run_id,
             notes=args.notes,
+            portfolio_path=args.portfolio,
         )
     except ConfigError as exc:  # pragma: no cover - defensive CLI guard
         LOGGER.error("Configuration invalide: %s", exc)
@@ -114,15 +116,6 @@ def main(argv: Optional[list[str]] = None) -> None:
             else:
                 diff = compute_garp_diff(previous, df)
                 _log_drift(diff)
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(...)
-    parser.add_argument("--config", ...)
-    parser.add_argument("--profile", ...)
-    parser.add_argument("--output-full", ...)
-    parser.add_argument("--output-radar", ...)
-    ...
-    return parser
 
 
 def _log_drift(diff: dict) -> None:

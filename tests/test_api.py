@@ -163,6 +163,51 @@ def test_run_cac40_garp_history_logging(monkeypatch, tmp_path):
     assert history_df.iloc[0]["strict_garp_count"] == 1
 
 
+def test_run_cac40_garp_with_portfolio(monkeypatch, tmp_path):
+    sample = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA.PA",
+                "price": 100.0,
+                "score_v1_1": 5,
+                "category_v1_1": "ELITE_V1_1",
+                "market_cap": 20e9,
+                "data_complete_v1_1": True,
+                GARP_FLAG_COLUMN: True,
+                GARP_SCORE_COLUMN: 90.0,
+                GARP_BUCKET_COLUMN: "ELITE_GARP",
+            },
+            {
+                "ticker": "BBB.PA",
+                "price": 50.0,
+                "score_v1_1": 3,
+                "category_v1_1": "WATCHLIST_V1_1",
+                "market_cap": 10e9,
+                "data_complete_v1_1": True,
+                GARP_FLAG_COLUMN: False,
+                GARP_SCORE_COLUMN: 40.0,
+                GARP_BUCKET_COLUMN: "REJECT_GARP",
+            },
+        ]
+    )
+
+    monkeypatch.setattr(api, "load_settings", lambda *args, **kwargs: _fake_settings())
+    monkeypatch.setattr(api, "run_universe", lambda *args, **kwargs: sample.copy())
+
+    portfolio_csv = tmp_path / "portfolio.csv"
+    portfolio_csv.write_text("ticker,quantity,cost_basis\nAAA.PA,2,50\n", encoding="utf-8")
+
+    full_df, radar_df, summary = api.run_cac40_garp(
+        config_path=None,
+        profile_name="balanced",
+        portfolio_path=str(portfolio_csv),
+    )
+
+    assert "owned" in full_df.columns
+    assert bool(full_df.loc[full_df["ticker"] == "AAA.PA", "owned"].iloc[0])
+    assert summary["strict_count"] == 1
+
+
 def test_run_garp_diagnostics_offline(tmp_path):
     snapshot = pd.DataFrame(
         [

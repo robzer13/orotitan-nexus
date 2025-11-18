@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional, Sequence, Tuple
@@ -29,6 +30,35 @@ LOGGER = logging.getLogger(__name__)
 
 def _default_run_id() -> str:
     return datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+
+
+def _load_portfolio_csv(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    required = {"ticker", "quantity", "cost_basis"}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(f"Portfolio CSV missing columns: {', '.join(sorted(missing))}")
+
+    df = df.copy()
+    df["ticker"] = df["ticker"].astype(str)
+    df["position_quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
+    df["position_cost_basis"] = pd.to_numeric(df["cost_basis"], errors="coerce")
+    return df[["ticker", "position_quantity", "position_cost_basis"]]
+
+
+def _overlay_portfolio(df: pd.DataFrame, portfolio_df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or portfolio_df.empty:
+        return df
+
+    merged = df.merge(portfolio_df, on="ticker", how="left")
+    merged["owned"] = merged["position_quantity"].fillna(0) > 0
+    merged["owned_bool"] = merged["owned"]
+
+    if "price" in merged.columns:
+        merged["position_value"] = merged["position_quantity"] * merged["price"]
+    else:
+        merged["position_value"] = np.nan
+    return merged
 
 
 def _log_history(summary: dict, history_path: Optional[str], run_id: str, notes: Optional[str]) -> None:
@@ -94,6 +124,7 @@ def run_cac40_garp(
     history_path: Optional[str] = None,
     run_id: Optional[str] = None,
     notes: Optional[str] = None,
+    portfolio_path: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Run the CAC40 GARP radar workflow and return full/radar dataframes."""
 
@@ -105,6 +136,9 @@ def run_cac40_garp(
         apply_garp=True,
         garp_thresholds=profile.garp,
     )
+    if portfolio_path:
+        portfolio_df = _load_portfolio_csv(portfolio_path)
+        df = _overlay_portfolio(df, portfolio_df)
     if isinstance(profile, ProfileSettingsV2):
         if profile.v2.enabled:
             df = apply_v2_scores(df, profile)

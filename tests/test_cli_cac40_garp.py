@@ -153,3 +153,43 @@ def test_cli_cac40_garp_snapshots_and_diff(tmp_path, monkeypatch):
     new_snapshot = snaps / "garp_new-run.csv"
     assert new_snapshot.exists()
     assert diff_called.get("called") is True
+
+
+def test_cli_cac40_garp_with_portfolio(tmp_path, monkeypatch):
+    sample = _sample_df()
+
+    portfolio_csv = tmp_path / "portfolio.csv"
+    portfolio_csv.write_text("ticker,quantity,cost_basis\nAAA.PA,2,50\n", encoding="utf-8")
+
+    called = {}
+
+    def _fake_run(**kwargs):  # pragma: no cover - deterministic stub
+        called["portfolio_path"] = kwargs.get("portfolio_path")
+        run_id = kwargs.get("run_id", "run")
+        data = sample.copy()
+        data["owned"] = [True, False]
+        radar = data[data[GARP_FLAG_COLUMN]].copy()
+        return data, radar, _summary(data, run_id)
+
+    monkeypatch.setattr(cli_cac40_garp, "run_cac40_garp", _fake_run)
+
+    full_path = tmp_path / "full.csv"
+    radar_path = tmp_path / "radar.csv"
+
+    cli_cac40_garp.main(
+        [
+            "--config",
+            "configs/cac40.yaml",
+            "--output-full",
+            str(full_path),
+            "--output-radar",
+            str(radar_path),
+            "--portfolio",
+            str(portfolio_csv),
+        ]
+    )
+
+    assert called.get("portfolio_path") == str(portfolio_csv)
+    full_df = pd.read_csv(full_path)
+    assert "owned" in full_df.columns
+    assert full_df.loc[full_df["ticker"] == "AAA.PA", "owned"].iloc[0]

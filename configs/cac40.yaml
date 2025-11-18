@@ -61,8 +61,6 @@ weights:
     safety: 0.35
 profile:
   name: balanced
-  portfolio:
-    path: "offline/portfolios/pea_2025-11-17.csv"
   garp:
     pe_ttm_max: 25.0
     pe_fwd_max: 15.0
